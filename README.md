@@ -276,7 +276,20 @@ kb.bat health
 
 ---
 
-## 4. 网页界面(Gradio)
+## 4. 网页界面
+
+有两套,**能力对齐**(`api/CONTRACT.md` 附录有一张逐控件比过的对照表):
+
+| | 什么时候用 |
+|---|---|
+| **Gradio**(`webui.py`) | 调试首选。少一层构建、少一个进程,排查"是后端不对还是前端不对"更快 |
+| **React**(`frontend/`) | 日常用。能力一样,但检索各路得分、问答的中间步骤、引用回溯都做得细 |
+
+两边**不要同时对同一个库做写操作** —— 后端单例是每进程一份,跨进程没有锁。
+
+### 4.1 Gradio
+
+不想记命令就用这个,四个页签对着下面 §3 的三档能力。
 
 不想记命令就用这个,四个页签对着下面 §3 的三档能力。
 
@@ -331,6 +344,23 @@ ReAct 的工具表来源,所以页面上的选择和 `kb.py --backend` 是一回
 从它取的。Gradio 默认会并发跑多个请求,那就成了一边导入一边问答、两边共用同一个
 后端和同一个 Qdrant store。本机单人用,串行反而是对的 —— 界面不会因为你手快
 连点两下就出错。
+
+### 4.2 React(FastAPI + Vite)
+
+两个进程,后端先起:
+
+```bash
+python scripts/api_server.py     # 127.0.0.1:8000
+cd frontend && npm install && npm run dev    # http://localhost:5173
+```
+
+浏览器开 **`localhost:5173`**,别换成 `127.0.0.1` —— Vite 绑的是 `::1`,换地址
+会直接被拒,和防火墙无关。调前端时**不要**给 `api_server.py` 加 `--reload`
+(uvicorn 会重建后端单例,每次都重新加载 bge-m3)。
+
+并发限成 1 这件事在 React 这边是**前端自己排队**(`frontend/src/api.js`),
+理由和上面 §4.1 一样;哪些请求不走队列、为什么,那份文件的开头写了。
+端口、构建、`null` vs `0.0`、引用回溯这些细节见 `frontend/README.md`。
 
 ---
 
@@ -759,7 +789,14 @@ LlamaIndex 的。原因见 §11 的 `Precision` 那条 —— 它的分母是"�
 ```
 config.py            所有配置(读 .env,单例 get_settings)
 kb.py / kb.bat       命令行入口
-webui.py / webui.bat Gradio 前端(四个页签)
+webui.py / webui.bat Gradio 前端(四个页签)—— **保留**,调试用
+api/                 HTTP 层(FastAPI;React 前端和别的程序走这里)
+  app.py             路由
+  schemas.py         请求体模型(pydantic)
+  serialize.py       响应体拼装(把 RetrievedChunk 摊平成 JSON)
+  state.py           进程级单例 + BACKEND_LOCK(一次只准一个请求碰后端)
+  CONTRACT.md        接口契约。**改行为先改它**,附录有逐控件的能力对照表
+frontend/            React 界面(Vite;与 Gradio 并存,README 在那层)
 uploads/             前端上传的文件落这里(自动建;块里的 source 就是它)
 embed/               bge-m3 稠密+稀疏
 store/               qdrant_store(块) / graph_store(Neo4j,含 delete_doc_graph)
@@ -782,7 +819,9 @@ eval/                检索质量评估(见 §9.5)
   qa/*.draft.jsonl    出题产物,待筛,可重生
   baselines/          基线 JSON
 scripts/             自检脚本 + 服务启动
+  api_server.py       起 HTTP API(127.0.0.1:8000;`--reload` 别和前端调试一起用)
   check_eval.py       评估设施自检(不花钱、不调 LLM)
+  check_api.py        接口自检(默认档要跑一次真上传,见脚本开头的说明)
   eval_run.py         跑评估(不花钱)
   eval_gen.py         出题(花钱 —— 先 --dry-run)
 qdrant_storage/      Qdrant 数据(别手删)

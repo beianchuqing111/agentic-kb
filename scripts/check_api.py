@@ -5,13 +5,21 @@
 
 跑法:
     set PYTHONIOENCODING=utf-8
-    python scripts\\check_api.py                # 免费档:不打模型,不花 LLM 调用
+    python scripts\\check_api.py                # 免费档:不加载大模型(见下面的"不免费"一节)
     python scripts\\check_api.py --ask          # 额外真跑一轮问答(会花 LLM 调用)
     python scripts\\check_api.py --concurrency  # 额外验并发串行化(会真导一篇)
 
 `--ask` 为什么是分开的:检索要加载 bge-m3(十几秒),问答还要连模型。
 默认档只验证"契约的形状"和"错误码对不对",这些用不着模型 ——
 每次改一行路由都等半分钟加载模型,自检就会没人跑。
+
+**默认档不是一分钱不花 —— 第 10 节是例外。** 上传校验必须走
+`/api/ingest/upload` 那条真链路(扩展名白名单、basename 压平、同名覆盖
+这些判断都长在路由里,绕开它就等于什么都没验),而那条链路会真的入库:
+正文一共三行,`chunks_written=1`、`llm_calls=2`(定位语 + 图抽取)。三次上传
+大概 6 次调用。量级是"几厘钱",但**这里不写"不花 LLM 调用"**,因为这个
+数字会随分块策略和 `ingest.contextual_enabled` 变 —— 一句写死的"免费"
+迟早会和它对不上,而那时没人会想到回来改这句话。
 
 `--concurrency` 为什么是**另一个**开关:它要真导一篇文档(花 LLM 调用),
 和"验问答"是两件事,绑一起会让"我只想验问答"的人被迫多花一次导入的钱。
@@ -341,6 +349,10 @@ def main(argv: list[str]) -> int:
         "llm_model",
         "tavily_configured",
         "rerank_enabled",
+        # 阈值和开关一起报。少了它们,「重排开着但一条都没留下」和
+        # 「重排关着」在界面上就没法区分 —— 前端的顶栏提示同时用这两个数。
+        "rerank_min_score",
+        "rerank_min_keep",
         "contextual_enabled",
         "include_superseded",
         "allow_write",
@@ -361,6 +373,59 @@ def main(argv: list[str]) -> int:
     check(set(b) == {"backends", "default", "current"}, "键恰好是三个", str(set(b)))
     check("hybrid" in b["backends"] and "graphrag" in b["backends"], "两个后端都在")
     check(b["current"] == h["backend"], "current 和 health 报的一致")
+
+    # ----------------------------------------------------------------- #
+    section("2b. GET /api/tools —— 前端闸 2 的名单来源")
+    # 这条路由存在的**唯一**理由是:前端不该把写工具的名字写死。
+    # 写死的话,工具一改名,界面上就变成"勾了 export_report 却没人批准",
+    # 而且看起来完全正常 —— 正是 `use_rerank` 那一类「看着在、其实没接线」。
+    # 所以这里要验的不只是形状:名单必须和后端真实的注册表对得上。
+    r = client.get("/api/tools")
+    check(r.status_code == 200, "200", r.text[:200])
+    tl = r.json()
+    check(set(tl) == {"allow_write", "tools"}, "键恰好是两个", str(set(tl)))
+    check(isinstance(tl["allow_write"], bool), "allow_write 是 bool(服务端总开关)")
+    check(
+        tl["allow_write"] == cfg["allow_write"],
+        "它报的 allow_write 和 health.config 是同一个数",
+        f"{tl['allow_write']} vs {cfg['allow_write']}",
+    )
+    tools = tl["tools"] or []
+    check(len(tools) > 0, "至少报了一个工具", str(len(tools)))
+    names = {t["name"] for t in tools}
+    for t in tools:
+        for key in ("name", "kind", "requires_confirm", "description", "parameter"):
+            check(key in t, f"工具 {t.get('name')!r} 有 {key!r}", str(t))
+    check(
+        all(t.get("kind") in {"read", "write"} for t in tools),
+        "kind 只可能是 read / write",
+        str({t.get("name"): t.get("kind") for t in tools}),
+    )
+    # 和后端真实的工具表对齐 —— 这才是这条自检的重点。名字对不上就等于
+    # 前端在让用户勾一个不存在的工具。
+    # 和上面那条路由同样的构造法,拿真实注册表来对。
+    from agent.tools import build_registry  # noqa: PLC0415
+
+    real = build_registry(get_settings().agent, allow_write=False)
+    real_names = set(real.tools)
+    check(
+        names == real_names,
+        "报出来的名字和真实注册表**完全一致**",
+        f"接口 {sorted(names)} vs 注册表 {sorted(real_names)}",
+    )
+    writes = [t["name"] for t in tools if t.get("kind") == "write"]
+    check(
+        all(t["requires_confirm"] for t in tools if t.get("kind") == "write"),
+        "每个写工具都 requires_confirm(闸 2 才有名单可点)",
+        str(writes),
+    )
+    needs = [t["name"] for t in tools if t["requires_confirm"]]
+    check(
+        set(needs) == set(writes),
+        "requires_confirm 的就是写工具,没有只读工具混进来",
+        f"点名名单 {needs} vs 写工具 {writes}",
+    )
+    print(f"     {len(tools)} 个工具 / 写工具 {writes or '(无)'}")
 
     # ----------------------------------------------------------------- #
     section("3. GET /api/eval —— 评测数字原样透传")
@@ -705,6 +770,47 @@ def main(argv: list[str]) -> int:
         check("llm_calls" in r.json(), "响应带 llm_calls(入库成本,可为 null)")
         print(f"     llm_calls={r.json().get('llm_calls')}  "
               f"chunks_written={r.json().get('chunks_written')}")
+
+        # ---- 同名覆盖要说出来 -------------------------------------- #
+        #
+        # 上面那次落盘已经让 `uploads/自检逃逸.md` 存在了,正好拿它验覆盖:
+        # 再传一个**同名但内容不同**的,响应里必须有一句提示。
+        #
+        # 为什么值得一条自检:`uploads/` 里的路径就是块 `source` 的来源,
+        # 静默换掉它,界面上一切正常 —— 只有"我导过这篇"的溯源码悄悄对不上。
+        # 这条路径原来是漏的(`webui.py` 的 `save_uploads` 一直有),所以
+        # 补上之后要留下判据,不然下次重构又会掉。
+        # 正文按 UTF-8 编码成 bytes —— Python 的 bytes 字面量只收 ASCII,
+        # 中文只能这么进来。
+        body_v2 = "# selfcheck v2\n\n不一样的内容。\n".encode("utf-8")
+
+        r = client.post(
+            "/api/ingest/upload",
+            files={"files": ("自检逃逸.md", body_v2, "text/markdown")},
+        )
+        check(r.status_code == 200, "同名不同内容的上传不报错", r.text[:200])
+        if r.status_code == 200:
+            notes = r.json().get("notes") or []
+            check(
+                any("自检逃逸.md" in n for n in notes),
+                "同名**不同内容** → notes 里说了覆盖",
+                f"notes={notes}",
+            )
+
+        # 反过来:同名**同内容**不许报警。同一份文件重传一遍是很常见的动作
+        # (上次导到一半断了、或者只是想确认一下),每次都弹一句警告会让人
+        # 开始无视这个提示。所以比的是内容,不是"文件已存在"。
+        r = client.post(
+            "/api/ingest/upload",
+            files={"files": ("自检逃逸.md", body_v2, "text/markdown")},
+        )
+        check(r.status_code == 200, "同名同内容的上传不报错", r.text[:200])
+        if r.status_code == 200:
+            check(
+                not (r.json().get("notes") or []),
+                "同名**同内容** → notes 是空的(比内容,不比时间戳)",
+                str(r.json().get("notes")),
+            )
 
     section("清理(自检不留垃圾)")
     cleanup()

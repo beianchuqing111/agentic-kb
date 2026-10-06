@@ -15,11 +15,11 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
 import queue
-import shutil
 import threading
 import time
 from collections import deque
@@ -135,6 +135,25 @@ def _llm_calls() -> int | None:
         return None
 
 
+#: 比对同名上传时一次读多少字节。1 MiB 是随手取的:够大(几十 MB 的
+#: PDF 也就几十次循环),又不会为了比一个哈希把整份文件读进内存。
+_DIGEST_BLOCK = 1 << 20
+
+
+def _digest(path: Path) -> str:
+    """文件的 sha256,边读边算。
+
+    只用来判断"同名文件的**内容**变没变",不是入库那条链上的
+    `content_hash`(`ingest/loader.py` 算的是**正文文本**的 sha1)。
+    两个哈希的输入都不一样,别拿来互相印证。
+    """
+    h = hashlib.sha256()
+    with path.open("rb") as fh:
+        for blk in iter(lambda: fh.read(_DIGEST_BLOCK), b""):
+            h.update(blk)
+    return h.hexdigest()
+
+
 def _build_agent(payload: AskRequest):
     """按请求拼一个 agent(**必须在锁里调**)。
 
@@ -162,8 +181,11 @@ def _build_agent(payload: AskRequest):
 
     guard = api_guard(
         allow_write=allow,
-        # 总开关关着时连工具名单都不往下传:免得日志里出现"用户点名了
-        # export_report"却仍被拒,看起来像名单没生效。
+        # 总开关关着时把**点名名单**清空(注意:清的是 `confirm_write_tools`
+        # 这个"批准了哪些"的列表,**不是**工具表本身 —— 写工具仍在 registry 里,
+        # 模型仍会去调,然后在 `ToolRegistry.run` 的授权环节被拒并留下一条
+        # `denied` 审计)。清名单是为了免得日志里出现"用户点名了 export_report"
+        # 却仍被拒,看起来像名单没生效。
         confirm_write_tools=payload.confirm_write_tools if allow else [],
         exports_dir=EXPORT_DIR,
         audit=AuditLog(s.agent.audit_log),
@@ -347,6 +369,12 @@ def create_app() -> FastAPI:
                 "llm_model": s.llm.model,
                 "tavily_configured": bool(s.web.configured),
                 "rerank_enabled": bool(s.retrieval.rerank_enabled),
+                # 两个阈值。`webui.py` 的「库状态」一直显示它们,契约这边
+                # 之前只给了开关 —— 而"重排开着但一条都没留下"和"重排关着"
+                # 在界面上长得一样,分不出来。数就是它们:
+                # 低于 `rerank_min_score` 的丢掉,但至少留 `rerank_min_keep` 条。
+                "rerank_min_score": s.retrieval.rerank_min_score,
+                "rerank_min_keep": s.retrieval.rerank_min_keep,
                 "contextual_enabled": bool(s.ingest.contextual_enabled),
                 "include_superseded": bool(s.retrieval.include_superseded),
                 "allow_write": bool(s.agent.allow_write),
@@ -359,6 +387,44 @@ def create_app() -> FastAPI:
             "backends": [b.value for b in BackendType],
             "default": get_settings().backend.value,
             "current": current_backend().name,
+        }
+
+    @app.get("/api/tools")
+    def tools() -> dict[str, Any]:
+        """工具清单。**前端闸 2 的复选框就是用这个渲染的。**
+
+        为什么非要给前端一条接口,而不是让它写死 `export_report` /
+        `mark_superseded`:写死的话,以后重命名一个写工具,前端那个复选框
+        就会**静默地什么都不批准** —— 用户勾了它、以为批准了,而请求里
+        带的是一个不存在的名字。那正是这个项目刚为 `use_rerank` 踩过的
+        「看着在、其实没接线」,不该在前端再长一个。
+
+        `allow_write` 回显的是**服务端**的总开关(`AGENT_ALLOW_WRITE`)。
+        它是闸 1 的一半,另一半才是请求里的 `allow_write`(见上面
+        `_build_agent`)。开关关着的时候,点名哪些工具**没有任何用** ——
+        调用方要求前端据此把闸 2 的控件禁掉并说明原因,而不是让用户
+        勾了半天才发现全被拒。
+
+        **不拿锁**:这里只是把 `Tool` 对象构造出来读它们的元数据,
+        不碰后端单例(每个工具都是**调用时**才去取 store / retriever)。
+        所以导入进行中它照样能立刻回答。
+        """
+        s = get_settings()
+        # 显式 `allow_write=False`:这条路由**只读元数据**,构造出来的
+        # 这个 registry 永远不会被 `run()`,给它写权限是白给。
+        reg = build_registry(s.agent, allow_write=False, exports_dir=EXPORT_DIR)
+        return {
+            "allow_write": bool(s.agent.allow_write),
+            "tools": [
+                {
+                    "name": t.name,
+                    "kind": t.kind,
+                    "requires_confirm": bool(t.requires_confirm),
+                    "description": t.description,
+                    "parameter": t.parameter,
+                }
+                for t in reg.tools.values()
+            ],
         }
 
     # ----------------------------------------------------------------- #
@@ -508,6 +574,7 @@ def create_app() -> FastAPI:
 
         UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
         saved: list[Path] = []
+        notes: list[str] = []
         for f in files:
             # 只取文件名部分。`filename` 是**外部输入**,带 `..\..\` 就能写到
             # uploads/ 外面去 —— 不信它。
@@ -521,14 +588,31 @@ def create_app() -> FastAPI:
                     detail=f"不支持的文件类型 {ext!r}。允许:{', '.join(UPLOAD_EXTS)}",
                 )
             dst = UPLOAD_DIR / name
+            # 同名覆盖要**说出来**。`webui.py` 的 `save_uploads` 也做这件事,
+            # 这里之前漏了 —— 而漏掉的后果不是报错,是静默:上传一份同名但
+            # 内容不同的文件,旧的那份就没了,界面上却一路正常。`uploads/`
+            # 里的路径正是块 `source` 的来源,"我导过这篇"的溯源码被换掉
+            # 而没人提,是最难查的一类不一致。
+            #
+            # 只比内容,不比时间戳:同一份文件重新上传一遍不该报警。
+            before = _digest(dst) if dst.exists() else None
+            h = hashlib.sha256()
             with dst.open("wb") as out:
-                shutil.copyfileobj(f.file, out)
+                while True:
+                    blk = f.file.read(_DIGEST_BLOCK)
+                    if not blk:
+                        break
+                    h.update(blk)
+                    out.write(blk)
+            if before is not None and before != h.hexdigest():
+                notes.append(f"{name} 已在 uploads/ 里且内容不同,已覆盖")
             saved.append(dst)
 
         out = _do_ingest(
             saved, recursive=recursive, force=force, backend_name=backend
         )
         out["saved"] = [str(p) for p in saved]
+        out["notes"] = notes
         return out
 
     # ----------------------------------------------------------------- #

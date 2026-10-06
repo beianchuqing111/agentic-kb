@@ -194,6 +194,8 @@ pydantic 的校验失败**不**直接透传(那玩意是一串 JSON path,给用�
     "llm_model": "deepseek-chat",
     "tavily_configured": true,
     "rerank_enabled": true,
+    "rerank_min_score": 0.05,        // 低于这个分数的丢掉…
+    "rerank_min_keep": 1,            // …但至少留这么多条
     "contextual_enabled": true,
     "include_superseded": false,     // 服务端默认口径(前端勾选框的初始值)
     "allow_write": false             // 服务端是否允许写工具
@@ -204,6 +206,11 @@ pydantic 的校验失败**不**直接透传(那玩意是一串 JSON path,给用�
 **这个端点不拿锁、也不切后端** —— 它必须在后端正忙(导入中)时也能立刻回答,
 不然前端的"服务不可用"横幅会在最不该出现的时候出现。
 
+两个 `rerank_min_*` 是**和开关一起**报的,不是凑数:`rerank_enabled=true` 只说明
+重排跑了,不说明有东西留下来。阈值调高到把候选全滤掉时,界面上"重排开着"和
+"重排关着"看起来一模一样,而这两件事的处置正好相反(一个是去调阈值,一个是
+去开开关)。`webui.py` 的「库状态」一直显示这两个数,契约这边原来只有开关。
+
 ## `GET /api/backends`
 
 ```jsonc
@@ -211,6 +218,34 @@ pydantic 的校验失败**不**直接透传(那玩意是一串 JSON path,给用�
 ```
 
 `current` 是服务端此刻实际在用的那个(见 §0.2)。
+
+## `GET /api/tools`
+
+```jsonc
+{
+  "allow_write": false,        // 服务端总开关(即 AGENT_ALLOW_WRITE),不是本次请求的意图
+  "tools": [
+    { "name": "search_knowledge_base", "kind": "read",  "requires_confirm": false,
+      "description": "…", "parameter": "…" },
+    { "name": "export_report",         "kind": "write", "requires_confirm": true,
+      "description": "…", "parameter": "…" }
+  ]
+}
+```
+
+**这一条存在的唯一理由是让前端渲染写权限的复选框时不必写死工具名。** 前端把
+`kind == "write"` 的挑出来列成勾选项,把 `allow_write` 当作"服务端天花板"来决定
+要不要禁用整个区块:
+
+- 名单写死在前端 → 工具一改名,勾选框就会静默地批准一个不存在的工具,
+  也就是「看着在、其实没接线」。这个项目为 `use_rerank` 踩过一次,不再踩第二次。
+- `allow_write` 与 `POST /api/ask` 请求体里同名的那个字段**不是一回事**:
+  这里是服务端的上限,那里是调用方这一次的意图,两者相与才生效(见 §写权限两把闸)。
+
+`requires_confirm: true` 就是"点名名单"(`confirm_write_tools`)里需要出现的那个名字。
+
+这一条**不占后端那把锁**:它只构造一遍 `Tool` 的元数据(`Tool` 各自在**被调用时**
+才去取 store/retriever),不碰全局单例。所以导入跑着的时候它也答得出来。
 
 ## `POST /api/search`
 
@@ -279,6 +314,21 @@ pydantic 的校验失败**不**直接透传(那玩意是一串 JSON path,给用�
 
 分开的理由:如果 `allow_write=true` 就等于全同意,两闸就塌成一闸。
 分开之后,一个 `allow_write=true` 但没点名工具的请求**照样被拒**。
+
+⚠️ **闸关着的时候,写工具并没有从工具表里消失。** 这一点反直觉,但要如实说:
+总开关关着时 `api/app.py` 清空的是**点名名单**(`confirm_write_tools if allow else []`),
+**不是** `registry`。所以模型**照样看得见、也照样会去调** `export_report`,
+然后:
+- 授权环节拒掉,`ToolRegistry.run` 返回 `错误:写工具 export_report 未启用(allow_write=False,默认关闭)`
+  (这条 `错误:` 前缀是工具层自己的约定,`agent/tools.py` 里五处失败返回共用);
+- 审计里留下一条 `phase: "denied"` 的记录 —— **没有副作用**;
+- 流式的那一轮里,你会先看到一个 `action`(工具名照报),再看到一个 `step`,
+  它的 `observation` 就是上面那句拒绝。
+
+所以前端**不该**把被拒的步骤标成绿色的「完成」,也**不该**指望"总开关关着时
+根本不会出现写工具调用"。实测过:请求带 `allow_write=true` 而服务端关着时,
+`export_report` 确实被调了一次、被拒、并在 `logs/audit.jsonl` 留下 `denied`。
+`GET /api/audit` 才是判定"被拒"还是"执行失败"的地方 —— 步骤列表只说"返回了错误"。
 
 ⚠️ **如实说清的边界**:它批准的是**工具**,不是**这一次调用的参数** ——
 参数是模型后面才生成的,API 形态下没法"先看后批"。所以它**不等价于**
@@ -377,12 +427,27 @@ pydantic 的校验失败**不**直接透传(那玩意是一串 JSON path,给用�
   "relations_written": 0,
   "llm_calls": 61,              // 见下。**可能为 null**
   "saved": ["D:\\agentic-kb\\uploads\\x.md"],   // **仅 upload 路由有**,落盘后的路径
+  "notes": [],                                   // **仅 upload 路由有**,见下
   "errors": [ {"file": "x.pdf", "error": "ValueError: …"} ]
 }
 ```
 
 `errors` 是**对象数组**不是字符串数组 —— 前端要能分列显示"哪个文件"和
 "为什么"。拼成一个字符串就只能整段显示,长错误信息会糊成一片。
+
+**`notes` 是"这一步没出错、但发生了你该知道的事"**,目前只有一条:同名文件
+被覆盖。传上来的文件名在 `uploads/` 里已存在、而**内容不同**时,老的那份被
+覆盖,这里给一句 `"x.md 已在 uploads/ 里且内容不同,已覆盖"`。
+
+为什么它既不算 `errors` 也不算无事发生:`uploads/` 里的路径正是块 `source` 的
+来源,悄悄换掉它,界面上一路正常,只有"我导过这篇"的溯源码会前后对不上 ——
+而那种不一致最难查,因为没有任何一步报过错。`webui.py` 的 `save_uploads`
+一直有这个提示,API 这边原来漏了。
+
+判据是**内容比对**不是"文件已存在":同一份文件重传一遍(上次导到一半断了、
+或者只是想确认一下)是常见动作,每次都弹警告会让人开始无视它。比的是
+sha256,和入库那条链上的 `content_hash` 不是一回事 —— 后者算的是**正文文本**
+的 sha1,两个哈希的输入都不同,别拿来互相印证。
 
 **`llm_calls` 的口径要说清楚,因为它不是"这次入库的消耗"。** 它取的是
 **进程级调用计数器的前后差值**(`get_llm().usage["calls"]`,和
@@ -556,6 +621,8 @@ Batch 4 的验收是"**逐条对比 `webui.py` 四个 tab 的能力,确认无遗
 | `ingest_btn`(`:596`) | 同上 |
 | `ingest_out`(`:598`) | 响应体 `files_seen` … `errors`(见上面那张响应表) |
 | 入库花了多少次模型调用(webui 的 `_ingest_cost_note`) | 响应 `llm_calls`(**同口径**:全局计数器差值) |
+| 没配 LLM 时的**动手前**提示(`:300`「本次导入会跳过定位语」) | `GET /api/health` → `config.llm_configured`,前端在页面上先提示。**时机是有意义的**:提前说还能先去配 key,事后说就只能补导了 |
+| 同名文件被覆盖的提示(`save_uploads` 的 `notes`,`:184`) | 响应 `notes`(**仅 upload 路由**) |
 
 ### 🔍 检索(`:611`)
 
@@ -592,6 +659,7 @@ Batch 4 的验收是"**逐条对比 `webui.py` 四个 tab 的能力,确认无遗
 | `docs_btn` 「列出文档」(`:669`) | `GET /api/docs` |
 | `docs_out`(`:670`) | `documents[]` |
 | `status_out`(`:672`) | `health.detail` + `stats` |
+| 配置表里的**重排阈值**(`:527` 的 `rerank_min_score` / `rerank_min_keep`) | `GET /api/health` → `config.rerank_min_score` / `config.rerank_min_keep` |
 
 ### API 有、Gradio 没有的(前端可做,不做不算缺)
 
@@ -605,6 +673,22 @@ Batch 4 的验收是"**逐条对比 `webui.py` 四个 tab 的能力,确认无遗
 | 流式中间步骤 | `stream: true`(SSE) | Gradio 是整段阻塞返回,长问答期间界面一动不动 |
 | 上传扩展名校验 | `/api/ingest/upload` 的 400 | Gradio 把不支持的扩展名直接扔给 loader |
 | **回溯原文**(一篇文档的全部块) | `GET /api/docs/{doc_id}` | 见上。**这条不算"不做也不算缺"** —— Batch 4 的验收明确要求"前端能点开引用回溯到原文",Gradio 没有这个能力,所以是 API 侧补的 |
+| 写工具的**名单本身** | `GET /api/tools` | 前端闸 2 的复选框靠它渲染,这样工具改名时界面跟着变,不会出现"勾了但没批准" |
 
 **仍然保持同一条并发约束**:一次只发一个会碰后端或跑模型的请求。
 Gradio 用 `default_concurrency_limit=1` 表达,这里用服务端的锁表达(§0.1)。
+
+#### 这张表是**对着代码逐控件比过**的,不是照着印象列的
+
+比的过程本身有产出:按 `webui.py:547` 的布局控件一个个对下来,找到三处
+**Gradio 有、API 漏了**的东西 —— 就是上面表里新补的三行(动手前的 LLM 提示、
+同名覆盖的提示、重排阈值)。三处都补在了 API 侧,不是前端绕过去。
+
+漏的方式值得记一笔:它们**都不是"功能没做"**,而是"信息没给出来"——
+`webui.py` 一直在界面上说这三件事,API 一个字段都没回。这种漏法不报错、
+不留痕,只有把两张表并排逐行对一遍才会露出来。反过来讲,凡是"某一列在
+Gradio 那边是个 `gr.Markdown` 拼出来的提示",就要多看一眼它拼的是什么数,
+那些数往往没有对应的响应字段。
+
+**Gradio 仍然是基准**:上表左侧任意一条在 API 里找不到对应物,就是缺口。
+API 多出来的那些不算数 —— 它们只是让前端能做更多,不影响"有没有漏"。
