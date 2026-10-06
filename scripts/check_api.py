@@ -5,12 +5,18 @@
 
 跑法:
     set PYTHONIOENCODING=utf-8
-    python scripts\\check_api.py            # 免费档:不打模型,不花 LLM 调用
-    python scripts\\check_api.py --ask      # 额外真跑一轮问答(会花 LLM 调用)
+    python scripts\\check_api.py                # 免费档:不打模型,不花 LLM 调用
+    python scripts\\check_api.py --ask          # 额外真跑一轮问答(会花 LLM 调用)
+    python scripts\\check_api.py --concurrency  # 额外验并发串行化(会真导一篇)
 
 `--ask` 为什么是分开的:检索要加载 bge-m3(十几秒),问答还要连模型。
 默认档只验证"契约的形状"和"错误码对不对",这些用不着模型 ——
 每次改一行路由都等半分钟加载模型,自检就会没人跑。
+
+`--concurrency` 为什么是**另一个**开关:它要真导一篇文档(花 LLM 调用),
+和"验问答"是两件事,绑一起会让"我只想验问答"的人被迫多花一次导入的钱。
+13 节("锁被占住时")不花钱也不碰库,但因为整个 `if with_concurrency:`
+是一起跑的,所以它也跟着这个开关走。
 
 重点验证:
   1. 每个路由的响应形状和 `api/CONTRACT.md` 对得上(尤其 `metrics` 不许存在、
@@ -19,6 +25,7 @@
   3. `backend` 字段的三种语义(切/省略=当前/不认识)
   4. 写工具的**两把钥匙**:请求要 `allow_write`,服务端环境变量也得开
   5. SSE 的事件序列:`action` 必须在 `done` 前面(前端靠它防卡死感)
+  6. 并发:后端是全局单例,请求必须串行化,而 `/api/health` 是刻意的例外
 """
 
 from __future__ import annotations
@@ -60,20 +67,53 @@ def section(title: str) -> None:
     print(f"\n[{title}]")
 
 
+#: 并发那节自己造的文档名(14 节要用它,所以先在这里定义)。
+#: **不许**拿 `eval/corpus/seed/` 里那 9 篇真规程去做并发试验:那是
+#: 把真语料重导一遍(`force=True`),万一文件被改过,库里的真数据就跟着变了。
+CONCURRENCY_DOC = "自检并发.md"
+
 #: 自检往库/上传目录里放的东西,跑完必须删干净。
 #: `check_store.py` 用的是"另建一个 collection",这里做不到 ——
 #: ingest 路由只会往配置里的那个 collection 写。所以改成事后清理,
 #: 并且**只删我们自己造的那几个名字**,不做任何"清空库"之类的动作。
 SELF_CHECK_NAMES = {
     "自检逃逸.md",
+    CONCURRENCY_DOC,
     # 第一版自检用的名字。留着是因为那次跑**真的**往库里塞了一篇,
     # 不列在这里的话它永远躺在库里没人认领。
     "逃逸.md",
 }
 
 
+def _clean_graph(doc_id: str, label: str) -> None:
+    """把这篇文档在图上的痕迹也清掉。
+
+    自己吞异常:免费档跑的时候 Neo4j 常常是停着的,那是**预期内**的状态,
+    不该让"图没清成"看起来像整个清理失败(库那一路是真清了)。但也不能
+    沉默 —— 图里留东西是要手工处理的,"没清成"必须说出来。
+    """
+    try:
+        from store.graph_store import get_graph_store
+
+        st = get_graph_store()
+        res = st.delete_doc_graph(doc_id)
+        print(
+            f"     (已从图里删掉 {label}:块 {res['chunks_deleted']} / "
+            f"关系 {res['relations_deleted']} / 孤立实体 {res['orphan_entities_deleted']})"
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"     ⚠️ 清理图失败(Neo4j 没起?记得手工删 {doc_id}):{exc}")
+
+
 def cleanup() -> None:
-    """删掉自检自己造进库和 uploads/ 的文档。"""
+    """删掉自检自己造进库、图里和 uploads/ 的文档。
+
+    **图那一路也要清**,不能只清 Qdrant:导入会同时往 Neo4j 写块节点和
+    抽出来的三元组(`delete_doc_graph` 里那段注释解释了为什么连关系和
+    孤立实体都得带走)。只删 Qdrant 的话,图里会留下谁也认领不了的块 ——
+    而发并发自检之前那篇自检文档只有标题、抽不出任何三元组,所以这个洞
+    一直没露出来。是并发那节(14 节)拿有真内容的文档去导,才把它撑破的。
+    """
     from store.qdrant_store import get_store
 
     try:
@@ -84,6 +124,7 @@ def cleanup() -> None:
                 if src in SELF_CHECK_NAMES:
                     store.delete_by_doc(d["doc_id"])
                     print(f"     (已从库里删掉自检文档 {src} / {d['doc_id']})")
+                    _clean_graph(d["doc_id"], src)
     except Exception as exc:  # noqa: BLE001
         print(f"     ⚠️ 清理库失败(记得手工删):{exc}")
     for name in SELF_CHECK_NAMES:
@@ -96,8 +137,194 @@ def cleanup() -> None:
             print(f"     ⚠️ 删 {p} 失败:{exc}")
 
 
+#: 自检文档的正文。要有几段真内容才会切出块来 —— 一个只有标题的文件
+#: 切不出块,导入会在毫秒级结束,那就什么都验不到了。
+_CONCURRENCY_BODY = """# 自检用文档
+
+本文件由 `scripts/check_api.py` 在并发自检里临时生成,跑完即删。
+它的唯一用途是让 `/api/ingest` 真的干一会儿活,好让另一个请求在锁上排队。
+
+线路巡视分为定期巡视、特殊巡视和故障巡视三类。定期巡视按规定周期进行,
+特殊巡视在恶劣天气、大负荷等情况下开展,故障巡视在事故跳闸后立即开展。
+
+巡视内容包括杆塔基础、导地线、绝缘子、金具、接地装置及通道环境。
+发现缺陷应按缺陷定级标准分类登记,并及时安排消缺。
+"""
+
+
+def _concurrency_sections(client: TestClient, with_ask: bool) -> None:
+    """Batch 4 的验收项:导入进行中发检索,行为必须与 Gradio 的 `concurrency=1` 一致。
+
+    一句话说清两个后端请求为什么会互相踩(`api/state.py` 模块头有完整版):
+    `retrieve/backends.get_backend()` 缓存的 `_backend` 是**进程级可变全局**,
+    切后端就是改它。两个请求同时进来,后来的那个会把前一个的后端换掉,
+    而两边在界面上都长得像正常输出。所以 API 用一把 `threading.Lock`
+    把「切后端 → 构造 agent → 跑完」整段串起来 —— 代价是没有并发,
+    这正是 `webui.py` 用 `default_concurrency_limit=1` 表达的同一件事。
+
+    分两节,因为它们能证明的东西不一样:
+
+      13 节**确定性**:直接在另一个线程里攥住那把锁,量两个请求。
+         与导入无关,所以不花 LLM 调用,也不会因为"导入太快、没赶上"
+         而偶发失败。它证明的是**锁本身**的语义。
+      14 节**真导入**:走 `/api/ingest` 真导一篇,证明那条路由确实
+         拿了同一把锁(13 节证明不了这个 —— 有人把 `_do_ingest` 里的
+         `with hold_backend` 删掉,13 节照样全绿)。
+
+    为什么用检索而不是问答来量排队:`/api/ask` 和 `/api/search` 走的是
+    **同一行** `with hold_backend(...)`(`api/app.py`),锁是同一个对象,
+    排队行为也一样。而问答要多跑一轮完整的 agent(好几次 LLM 调用),
+    为了验一把锁花那个钱不划算。**如实记一笔**:真·导入中发问答这条
+    组合没有被单独压测过,它是"同一把锁"推出来的,不是量出来的。
+    """
+    import threading
+    import time as _t
+
+    from api.state import BACKEND_LOCK
+
+    # ----------------------------------------------------------------- #
+    section("13. 并发(确定性):锁被占住时,检索必须等,健康检查必须不等")
+    held = threading.Event()
+    release = threading.Event()
+    hold_seconds = 5.0
+
+    def _hold() -> None:
+        with BACKEND_LOCK:
+            held.set()
+            release.wait(hold_seconds)  # 上限,免得自检把锁攥死了不放
+
+    holder = threading.Thread(target=_hold, daemon=True)
+    holder.start()
+    if not held.wait(10):
+        check(False, "另起一个线程拿住了 BACKEND_LOCK", "10s 没拿到")
+        return
+
+    t0 = _t.time()
+    rh = client.get("/api/health", timeout=60)
+    dt_health = _t.time() - t0
+    check(
+        rh.status_code == 200,
+        "锁被别人占着,健康检查照样 200(它刻意不拿锁)",
+        f"{rh.status_code}: {rh.text[:160]}",
+    )
+    check(
+        dt_health < 2.0,
+        "健康检查没被锁挡住(<2s)",
+        f"{dt_health:.2f}s —— 被挡住说明 /api/health 也去抢锁了,"
+        "前端的「服务不可用」横幅会在导入时乱闪",
+    )
+
+    t0 = _t.time()
+    rs = client.post("/api/search", json={"query": "绝缘子检测的周期", "top_k": 3}, timeout=120)
+    dt_search = _t.time() - t0
+    release.set()
+    holder.join(10)
+
+    check(rs.status_code == 200, "排完队之后检索 200", rs.text[:200])
+    # 攥锁的那 5s 里检索必须一直等着。留足余量:即使请求派发花了 1s,
+    # 剩下的 4s 也远超 3s 这条线。
+    check(
+        dt_search >= 3.0,
+        "检索**在锁上等了**(没有绕过锁插进去跑)",
+        f"只花了 {dt_search:.2f}s —— 说明它没走 hold_backend",
+    )
+    print(
+        f"     锁被别人占 {hold_seconds:.0f}s / health {dt_health * 1000:.0f}ms(不等)"
+        f" / search {dt_search:.2f}s(把锁等完才动)"
+    )
+
+    # ----------------------------------------------------------------- #
+    section("14. 并发(真导入):导入进行中,锁确实是它拿的")
+    up = UPLOAD_DIR / CONCURRENCY_DOC
+    UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    up.write_text(_CONCURRENCY_BODY, encoding="utf-8")
+    box: dict[str, object] = {}
+    seen_locked = threading.Event()
+
+    def _ingest() -> None:
+        # force=True:上一次跑剩下来的话 content_hash 没变会被直接跳过,
+        # 导入就成了毫秒级的一下,那这一节就白跑了。
+        box["ingest"] = client.post(
+            "/api/ingest",
+            json={"path": str(up), "force": True},
+            timeout=600,
+        )
+
+    th = threading.Thread(target=_ingest, daemon=True)
+    th.start()
+
+    # 轮询等锁被拿住。导入里有 LLM 调用(定位语)+ 一次嵌入,再快也是几百
+    # 毫秒;5ms 采一次,这个窗口不可能整段漏过去。真观察不到,就是它没拿锁。
+    t_poll = _t.time()
+    while _t.time() - t_poll < 30:
+        if BACKEND_LOCK.locked():
+            seen_locked.set()
+            break
+        _t.sleep(0.005)
+    check(
+        seen_locked.is_set(),
+        "导入进行中,导入那条路由确实攥着 BACKEND_LOCK",
+        "30s 没见锁被拿住 —— 导入可能没走 hold_backend",
+    )
+
+    dt_health2 = None
+    dt_search2 = None
+    rs2 = None
+    if seen_locked.is_set() and th.is_alive():
+        t0 = _t.time()
+        rh2 = client.get("/api/health", timeout=60)
+        dt_health2 = _t.time() - t0
+        check(
+            rh2.status_code == 200 and dt_health2 < 2.0,
+            "导入进行中健康检查仍然立刻回答",
+            f"{rh2.status_code} / {dt_health2:.2f}s",
+        )
+
+    # 导入还在跑的时候发一次检索:锁在导入手里,它只能排队。花多久取决于
+    # 导入还剩多少,**这里只报数不设卡** —— 设一个和导入时长挂钩的阈值就是
+    # 在赌偶发失败,而"确实排了队"这件事已经由 13 节确定性地证明了。
+    if seen_locked.is_set() and th.is_alive():
+        t0 = _t.time()
+        rs2 = client.post(
+            "/api/search", json={"query": "巡视分为哪几类", "top_k": 3}, timeout=600
+        )
+        dt_search2 = _t.time() - t0
+        check(rs2.status_code == 200, "导入还在跑时发的检索最终 200", rs2.text[:200])
+    else:
+        # 导入快到这个程度的话,这一节就没东西可量了。**说出来**,别让
+        # 一个空结果看着像通过。
+        print("     导入在发检索之前就结束了 —— 这一节的排队时长这回量不到")
+
+    th.join(600)
+    ing = box.get("ingest")
+    code = getattr(ing, "status_code", 0)
+    check(code == 200, "导入本身 200", f"{code}: {getattr(ing, 'text', '')[:200]}")
+    if code == 200:
+        body = ing.json()
+        check(
+            body.get("chunks_written", 0) > 0,
+            "导入真的写了块(不是 skipped)",
+            str({k: body.get(k) for k in ("chunks_written", "docs_unchanged")}),
+        )
+        parts = [
+            f"导入 chunks={body.get('chunks_written')} "
+            f"llm_calls={body.get('llm_calls')} {body.get('elapsed_ms')}ms"
+        ]
+        if dt_health2 is not None:
+            parts.append(f"health {dt_health2 * 1000:.0f}ms")
+        if dt_search2 is not None:
+            parts.append(f"search 排队 {dt_search2:.2f}s")
+        print("     " + " / ".join(parts))
+
+    section("清理(并发自检不留垃圾)")
+    cleanup()
+    if not with_ask:
+        print("     (并发那节用的是检索 —— 同一把锁,但没单独压测过导入中发问答)")
+
+
 def main(argv: list[str]) -> int:
     with_ask = "--ask" in argv
+    with_concurrency = "--concurrency" in argv
     s = get_settings()
     client = TestClient(app)
 
@@ -499,6 +726,9 @@ def main(argv: list[str]) -> int:
             check("steps" in res and "usage" in res, "done.result 带 steps/usage")
             print(f"     事件序列:{types}")
 
+    if with_concurrency:
+        _concurrency_sections(client, with_ask)
+
     # ----------------------------------------------------------------- #
     print("\n" + "=" * 62)
     if FAILED:
@@ -509,6 +739,8 @@ def main(argv: list[str]) -> int:
     print("全部通过 ✅")
     if not with_ask:
         print("(问答/SSE 两节没跑 —— 加 --ask 会真花 LLM 调用)")
+    if not with_concurrency:
+        print("(并发那一节没跑 —— 加 --concurrency 会真导一次,花 LLM 调用)")
     return 0
 
 
