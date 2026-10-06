@@ -454,6 +454,40 @@ def main(argv: list[str]) -> int:
     )
 
     # ----------------------------------------------------------------- #
+    section("5b. GET /api/docs/{doc_id} —— 点引用回溯原文要用的那份数据")
+    if not d["docs"]:
+        # 空库时**明说跳过**,不要假装通过:这条路由正是"库里有东西"才成立的。
+        print("     跳过:库是空的,没有 doc_id 可查")
+    else:
+        pick = d["docs"][0]
+        r = client.get(f"/api/docs/{pick['doc_id']}")
+        check(r.status_code == 200, "200", r.text[:200])
+        if r.status_code == 200:
+            det = r.json()
+            check(
+                set(det) == {"doc_id", "source", "title", "total", "chunks"},
+                "键恰好是五个",
+                str(set(det)),
+            )
+            check(
+                det["total"] == pick["chunks"] == len(det["chunks"]),
+                "块数和 /api/docs 对得上(两份口径别打架)",
+                f"/api/docs 说 {pick['chunks']},这里 {det['total']}/{len(det['chunks'])}",
+            )
+            idx = [c["chunk_index"] for c in det["chunks"]]
+            check(idx == sorted(idx), "按 chunk_index 升序(回溯要按原文顺序读)", str(idx))
+            check(all(c["text"] for c in det["chunks"]), "每块都有正文")
+            # `context` 是"这块在全文哪儿"的唯一线索。定位语是可选生成的
+            # (没开 contextual 就全是空串),所以只要求**字段在**,不要求非空。
+            check(all("context" in c for c in det["chunks"]), "每块都带 context 字段")
+            n_ctx = sum(1 for c in det["chunks"] if c["context"])
+            print(f"     {det['title']} / {det['total']} 块,其中 {n_ctx} 块有定位语")
+        check(
+            client.get("/api/docs/绝不可能存在的docid").status_code == 404,
+            "不存在的 doc_id → 404(不是 200 空列表)",
+        )
+
+    # ----------------------------------------------------------------- #
     section("6. GET /api/stats")
     r = client.get("/api/stats")
     check(r.status_code == 200, "200", r.text[:300])

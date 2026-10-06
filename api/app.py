@@ -565,6 +565,60 @@ def create_app() -> FastAPI:
             "docs": sorted(shown, key=lambda d: -(d.get("chunks") or 0)),
         }
 
+    @app.get("/api/docs/{doc_id}")
+    def doc_chunks(doc_id: str) -> dict[str, Any]:
+        """一篇文档的**全部块**,按 `chunk_index` 排好序 —— 给"点引用回溯原文"用。
+
+        为什么非要有这条路由:检索结果里的 `hit.text` 只是**那一块**的正文,
+        而人要看的是"这句话在原文里是什么位置、前后在讲什么"。只给一块的话,
+        引用能看见但回溯不了 —— 用户没法确认它是不是被断章取义了,而这正是
+        "引用可核验"唯一有意义的地方。
+
+        **Gradio 没有这个能力**(它的库状态页只列文档,不展开正文),所以这条
+        API 比 Gradio 多。计划里 Batch 4 的验收写着"前端能点开引用回溯到原文",
+        这是它需要的那块后端。
+
+        ⚠️ 返回的是**全文块**,没有做条数上限:一篇文档在这里就是几个到几十个
+        块(自检语料最多 7 块/篇),分页反而会让"回溯"变成翻页。真接了大文档
+        要改成分页,那时按 `chunk_index` 游标切。
+        """
+        from store.qdrant_store import get_store
+
+        # 走锁,理由和 `/api/docs` 一样:它读的是导入会改的那张表,
+        # 要和"导入中"互斥(口径同 Gradio 的 concurrency=1)。
+        with hold_backend(None):
+            store = get_store()
+            if not store.exists():
+                raise HTTPException(status_code=404, detail=f"文档不存在:{doc_id}")
+            records = store.doc_records(doc_id)
+
+        if not records:
+            raise HTTPException(status_code=404, detail=f"文档不存在:{doc_id}")
+
+        rows = []
+        for rec in records:
+            p = dict(rec.payload or {})
+            rows.append(
+                {
+                    "chunk_index": int(p.get("chunk_index") or 0),
+                    "text": p.get("text") or "",
+                    # 定位语(导入时模型写的"这段在讲什么"),可能为空串 ——
+                    # 回溯时要的就是它:块本身看不出自己在全文的位置
+                    "context": p.get("context") or "",
+                    "status": p.get("status") or "",
+                    "doc_version": p.get("doc_version") or "",
+                }
+            )
+        rows.sort(key=lambda r: r["chunk_index"])
+        head = dict(records[0].payload or {})
+        return {
+            "doc_id": doc_id,
+            "source": head.get("source") or "",
+            "title": head.get("title") or "",
+            "total": len(rows),
+            "chunks": rows,
+        }
+
     @app.get("/api/stats")
     def stats() -> dict[str, Any]:
         try:
