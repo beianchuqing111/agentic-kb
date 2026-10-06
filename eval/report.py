@@ -123,6 +123,9 @@ class RunResult:
     retrieval: dict[str, Any]
     effective_k: int
     ks: list[int]
+    #: 哪个检索后端跑出来的(`hybrid` / `graphrag`)。进基线是为了让 JSON 自解释 ——
+    #: 否则读到 `graphrag:no-threshold+wide` 的人只能靠 run 名字去猜。
+    retriever: str = "hybrid"
     # str(k) → 聚合值。键转字符串是为了直接进 JSON。
     aggregates: dict[str, dict[str, float]] = field(default_factory=dict)
     by_type: dict[str, dict[str, dict[str, float]]] = field(default_factory=dict)
@@ -191,6 +194,7 @@ def build_baseline(
         "runs": {
             name: {
                 "spec": r.spec,
+                "retriever": r.retriever,
                 "use_rerank": r.use_rerank,
                 "retrieval": r.retrieval,
                 "effective_k": r.effective_k,

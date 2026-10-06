@@ -225,6 +225,8 @@ class GraphIngestPipeline:
                 "%s 的块在 Qdrant 里没变,但图上有 %d/%d 块 —— 补建图",
                 doc.source, on_graph, len(chunks),
             )
+            # 补建图这条路,定位语必须**从库里读回来** —— 见 _contexts_from_store
+            contexts = self._contexts_from_store(doc, chunks)
 
         # 变了(或图不全)→ 两个库都按文档整体重写,保持两边一致
         if not force:
@@ -247,6 +249,38 @@ class GraphIngestPipeline:
         stats.docs_indexed += 1
         stats.chunks_written += written
 
+    def _contexts_from_store(self, doc: Document, chunks: Sequence[Any]) -> list[str]:
+        """把**上次写进 Qdrant 的**定位语读回来,与 `chunks` 等长对齐。
+
+        只在「块没变、但图上缺块」这条路上用。这时 `prepare_document` 不会
+        重新生成定位语(那是要花 LLM 钱的),而它返回的 `contexts` 是**空列表**
+        —— 那不是「这篇没有定位语」,是「这次没生成」。图这条分支和 hybrid
+        不同,它**不能提前 return**(图还等着补),于是会一路走到写库那段,
+        拿空列表去 `zip(chunks, contexts)`:序列长度为 0,嵌出 (0,1024) 的
+        空矩阵,然后在 `res.dense[0]` 上炸 IndexError。
+
+        就算不炸,也**不能就地重新生成一份**:图里的块文本必须是「定位语 +
+        原文」,和 Qdrant 里那份逐字一致。各生成各的会得到两份不同的文本 ——
+        而症状只是检索分数变低,没有报错。
+
+        读不回来的块(比如索引错位)留空串,让 `stats.contextual_missing`
+        照常报出来,而不是静默补个假的。
+        """
+        want = {(doc.doc_id, ch.index): i for i, ch in enumerate(chunks)}
+        out = [""] * len(chunks)
+        for rec in self.store.fetch_chunks(list(want)):
+            payload = rec.payload or {}
+            i = want.get((payload.get("doc_id"), payload.get("chunk_index")))
+            if i is not None:
+                out[i] = payload.get("context") or ""
+        missing = sum(1 for c in out if not c)
+        if missing:
+            logger.warning(
+                "%s:有 %d/%d 块的定位语没能从 Qdrant 读回来(图上这些块会缺定位语)",
+                doc.source, missing, len(out),
+            )
+        return out
+
     def _write_group(
         self,
         doc: Document,
@@ -264,6 +298,15 @@ class GraphIngestPipeline:
         res = self.embedder.encode(
             embed_texts, batch_size=self._batch_size(len(group))
         )
+        # 编码条数对不上就当场停。不对齐的后果全在**下游**:`res.dense[i]`
+        # 是个 IndexError(难查),而 `zip` 静默截断更难查 —— 会写出少几块的
+        # 文档,谁也不报错。(历史上真踩过:定位语取空列表,见 _contexts_from_store)
+        if len(res) != len(group):
+            raise RuntimeError(
+                f"编码结果与块数对不上:{len(res)} 条 vs {len(group)} 块"
+                f"({doc.source})。嵌入文本 {len(embed_texts)} 条 —— "
+                "对照 contexts/hashes 是不是和 chunks 等长。"
+            )
 
         # --- 1. 落 Qdrant(和 hybrid 后端同一份数据,见模块说明)---
         stored = [

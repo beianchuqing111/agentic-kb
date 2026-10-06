@@ -59,7 +59,9 @@ from eval.metrics import (
 )
 from eval.schema import EvalItem, EvalSet, EvalSetError, load_qa, make_meta
 from ingest import IngestPipeline
+from ingest.graph_pipeline import GraphIngestPipeline
 from retrieve import HybridRetriever, RetrievalDebug
+from store.graph_store import Neo4jGraphStore
 
 __all__ = ["PRESETS", "PRESET_HELP", "RunSpec", "build_specs", "main"]
 
@@ -91,6 +93,10 @@ PRESET_HELP: dict[str, str] = {
     "dense-rrf-k2": "RRF k=60→2 —— 保证会动的演示",
 }
 
+#: 可选的检索后端。加一个后端不等于加一个旋钮 —— 它得先在 `run_spec`
+#: 里真的被构造出来,否则就是「看着在、其实没接线」。
+RETRIEVERS: frozenset[str] = frozenset({"hybrid", "graphrag"})
+
 #: 本进程内改不了、只能靠重启生效的键(`get_reranker` 缓存单例,
 #: `retrieve/reranker.py:144-150` 只在第一次调用时读 cfg)。
 #: **必须显式告警**:评估工具最经典的坑就是「改了参数、数字没动、以为结论是没影响」。
@@ -105,14 +111,18 @@ class RunSpec:
     """一个要跑的配置变体。"""
 
     name: str
-    #: 喂给 `HybridRetriever(cfg=...)` 的完整配置
+    #: 喂给检索器的完整配置
     retrieval: RetrievalConfig
     #: `None` = 跟随 `retrieval.rerank_enabled`;否则显式覆盖 `retrieve(use_rerank=)`
     use_rerank: bool | None = None
+    #: `hybrid` = 纯块级混合检索;`graphrag` = 混合检索 + 图上多跳来的额外召回。
+    #: 两者的结果都进同一套打分,所以**只有这个字段不同**才是干净对照。
+    retriever_kind: str = "hybrid"
 
     def label(self) -> str:
         r = self.retrieval
         bits = [
+            f"retriever={self.retriever_kind}",
             f"rerank={self.use_rerank if self.use_rerank is not None else r.rerank_enabled}",
             f"min_score={r.rerank_min_score}",
             f"min_keep={r.rerank_min_keep}",
@@ -183,6 +193,7 @@ def build_specs(
     base: RetrievalConfig,
     presets: Sequence[str],
     overrides: Mapping[str, Any] | None = None,
+    retrievers: Sequence[str] | None = None,
 ) -> list[RunSpec]:
     """preset 列表 → RunSpec 列表。
 
@@ -194,31 +205,64 @@ def build_specs(
     所以名字里可以用 `+`(或 `,`)合并:`--preset no-threshold+wide`。
     合并顺序即书写顺序,后者覆盖前者。
 
+    `retrievers` 是**另一根轴**:`hybrid` 与 `graphrag` 各自跑一遍全部 preset。
+    两个轴是**笛卡尔积**而不是叠加 —— 因为「graphrag + no-rerank」这类组合
+    才是想知道「图的增益是不是被重排吃掉」时该看的东西。
+
+    命名规则:`hybrid` 保持**裸名**(`no-threshold+wide`),这样既有基线
+    (`before` / `rrf60` / `ct_on` …)的 run key 一个都不用改;其它后端加前缀
+    (`graphrag:no-threshold+wide`)。同一个进程里跑两条后端时,名字必须能分开,
+    否则后者会把前者的结果覆盖掉 —— 而覆盖是静默的。
+
     `no-rerank` 被强制排到最前:它不需要加载 2.3G 重排器,先跑它能让
     「只是想看看混合检索什么水平」的人立刻拿到数字,而不用先等模型下载。
     """
     names = list(presets) or ["shipped"]
-    specs: list[RunSpec] = []
-    for name in names:
-        parts = [p for p in name.replace(",", "+").split("+") if p]
-        unknown = [p for p in parts if p not in PRESETS]
-        if unknown:
-            raise ValueError(
-                f"未知 preset:{', '.join(unknown)}\n"
-                f"  可用:{', '.join(f'{k}({v})' for k, v in PRESET_HELP.items())}\n"
-                f"  组合用 + 连接,例如 --preset no-threshold+wide"
-            )
-        kw: dict[str, Any] = {}
-        for part in parts:  # 后者覆盖前者
-            kw.update(PRESETS[part])
-        kw.update(overrides or {})
-        kw.setdefault("rerank_enabled", base.rerank_enabled)
-        specs.append(
-            RunSpec(name="+".join(parts), retrieval=dataclasses.replace(base, **kw))
+    kinds = list(retrievers) or ["hybrid"]
+    unknown_kind = [k for k in kinds if k not in RETRIEVERS]
+    if unknown_kind:
+        raise ValueError(
+            f"未知检索后端:{', '.join(unknown_kind)}\n"
+            f"  可用:{', '.join(sorted(RETRIEVERS))}"
         )
 
-    specs.sort(key=lambda s: 0 if s.name == "no-rerank" else 1)
+    specs: list[RunSpec] = []
+    for kind in kinds:
+        for name in names:
+            parts = [p for p in name.replace(",", "+").split("+") if p]
+            unknown = [p for p in parts if p not in PRESETS]
+            if unknown:
+                raise ValueError(
+                    f"未知 preset:{', '.join(unknown)}\n"
+                    f"  可用:{', '.join(f'{k}({v})' for k, v in PRESET_HELP.items())}\n"
+                    f"  组合用 + 连接,例如 --preset no-threshold+wide"
+                )
+            kw: dict[str, Any] = {}
+            for part in parts:  # 后者覆盖前者
+                kw.update(PRESETS[part])
+            kw.update(overrides or {})
+            kw.setdefault("rerank_enabled", base.rerank_enabled)
+            bare = "+".join(parts)
+            specs.append(
+                RunSpec(
+                    name=bare if kind == "hybrid" else f"{kind}:{bare}",
+                    retrieval=dataclasses.replace(base, **kw),
+                    retriever_kind=kind,
+                )
+            )
+
+    specs.sort(key=_spec_order)
     return specs
+
+
+def _spec_order(s: RunSpec) -> tuple[int, int, str]:
+    """排序只为**读起来顺**:先 no-rerank(不必加载重排器),再按后端分组。"""
+    bare = s.name.split(":", 1)[-1]
+    return (
+        0 if bare == "no-rerank" else 1,
+        0 if s.retriever_kind == "hybrid" else 1,
+        bare,
+    )
 
 
 def effective_k(spec: RunSpec, top_k: int) -> int:
@@ -273,6 +317,41 @@ def _open_eval_store(settings: Settings, collection: str):
     return QdrantStore(cfg=dataclasses.replace(settings.qdrant, collection=collection))
 
 
+def _open_eval_graph(settings: Settings) -> Neo4jGraphStore:
+    """给评估开图。**和 Qdrant 那边不一样:这里没有第二张图可开。**
+
+    Neo4j Community 只有**一个** database(`config.Neo4jConfig.database`),
+    没法像 collection 那样给评估单开一个库。所以隔离只能靠 `source` 过滤
+    (见 `GraphRAGBackend.sources`),而不是靠「另开一张图」。
+
+    代价要说清楚:评估**会写进生产图所在的那个库**,和正式语料共存。
+    因此:
+      - 作用域过滤是**必须**的,不是可选的优化 —— 没有它,评估的图查询
+        会看见生产实体,而报告上看不出任何异常。
+      - 反过来也别指望 `clear()` 清理评估痕迹 —— 那会把生产图一起清掉。
+    """
+    store = Neo4jGraphStore(cfg=settings.neo4j)
+    health = store.health()
+    if not health.get("ok"):
+        raise RuntimeError(
+            f"连不上 Neo4j({settings.neo4j.uri}):{health.get('error')}\n"
+            f"  graphrag 这一档需要它。先跑 scripts\\start_neo4j.bat。"
+        )
+    # 顺手把版本打出来。上面那段「只有一个库」的推理成立与否取决于
+    # edition —— 换成 Enterprise 就该重新考虑要不要单开一个 database,
+    # 而这个前提不该只活在注释里。
+    print(
+        f"  Neo4j {health.get('server')} {health.get('version')}"
+        f" ({health.get('edition')}) — "
+        + (
+            "按 source 过滤隔离"
+            if health.get("edition") == "community"
+            else "注意:这个版本支持多库,可以不再靠属性过滤"
+        )
+    )
+    return store
+
+
 def ingest_corpus(
     *,
     root: Path,
@@ -311,6 +390,42 @@ def _label(key: ChunkKey, labels: Mapping[ChunkKey, str]) -> str:
     return labels.get(key) or f"{key[0][:8]}#{key[1]}"
 
 
+def build_retriever(
+    spec: RunSpec,
+    *,
+    store,
+    graph=None,
+    graph_sources: Sequence[str] | None = None,
+):
+    """按 `spec.retriever_kind` 造检索器。
+
+    两条路**必须**都拿到评估侧的 store(和评估侧的图作用域)。默认参数是
+    生产库,而评估的块在评估 collection 里 —— 一旦退回默认,图反查会在生产库里
+    查不到块,表现为「图的召回全是 missing」,数字莫名其妙地低,而报错一个没有。
+    """
+    if spec.retriever_kind == "hybrid":
+        return HybridRetriever(store=store, cfg=spec.retrieval)
+
+    if spec.retriever_kind != "graphrag":
+        raise ValueError(f"未知 retriever_kind: {spec.retriever_kind!r}")
+
+    if graph is None:
+        raise RuntimeError(
+            "spec 要求 graphrag,但没传图实例 —— 拒绝退回生产图。\n"
+            "  构造 GraphRAGBackend 时省略 graph 会默认拿 get_graph_store(),\n"
+            "  那是生产图;而评估的块只在评估 collection 里,eval 侧反查会全部落空。\n"
+            "  这类失败不报错、只是分数变低,最难查 —— 所以在这里直接拦住。"
+        )
+    from retrieve.backends import GraphRAGBackend
+
+    return GraphRAGBackend(
+        store=store,
+        graph=graph,
+        cfg=spec.retrieval,
+        sources=graph_sources,
+    )
+
+
 def run_spec(
     spec: RunSpec,
     *,
@@ -320,6 +435,8 @@ def run_spec(
     ks: Sequence[int],
     top_k: int,
     foreign_golds: set[ChunkKey],
+    graph=None,
+    graph_sources: Sequence[str] | None = None,
 ) -> R.RunResult:
     """跑一个配置变体,返回可直接落盘的结果。"""
     eff = effective_k(spec, top_k)
@@ -335,7 +452,9 @@ def run_spec(
     # 评估是单进程顺序跑的,store 也是评估专用的,所以这里直接绑过去。
     store.retrieval = spec.retrieval
 
-    retriever = HybridRetriever(store=store, cfg=spec.retrieval)
+    retriever = build_retriever(
+        spec, store=store, graph=graph, graph_sources=graph_sources
+    )
 
     # (doc_id, chunk_index) → "文件#块",只为人看得懂
     labels: dict[ChunkKey, str] = {}
@@ -348,6 +467,7 @@ def run_spec(
         retrieval=dataclasses.asdict(spec.retrieval),
         effective_k=eff,
         ks=list(ks),
+        retriever=spec.retriever_kind,
     )
 
     per_k_scores: dict[int, list] = {k: [] for k in ks}
@@ -621,11 +741,14 @@ def build_parser() -> argparse.ArgumentParser:
         epilog=(
             "示例:\n"
             "  eval_run.py --preset no-rerank\n"
-            "  eval_run.py --preset no-threshold --wide --save-baseline before\n"
-            "  eval_run.py --preset no-threshold --wide --set rrf_k=2 --baseline before\n"
-            "  eval_run.py --preset no-threshold --no-contextual --save-baseline noctx\n"
+            "  eval_run.py --preset no-threshold+wide --save-baseline before\n"
+            "  eval_run.py --preset no-threshold+wide --set rrf_k=2 --baseline before\n"
+            "  eval_run.py --preset no-threshold+wide --no-contextual --save-baseline noctx\n"
+            "  eval_run.py --preset no-threshold+wide --retriever hybrid,graphrag\n"
             "  eval_run.py --locate \"值班人员每四小时抄录\"\n"
             "  eval_run.py --purge\n"
+            "注意 --preset 的组合用 + 连接(no-threshold+wide);写成两个 --preset\n"
+            "  是**两档横评**,不是一次组合。\n"
         ),
     )
     p.add_argument("--corpus", default=None, help="语料目录(默认 eval/corpus/seed)")
@@ -652,6 +775,20 @@ def build_parser() -> argparse.ArgumentParser:
         default=[],
         metavar="KEY=VALUE",
         help="可重复。对着 RetrievalConfig 校验,未知键是硬错误",
+    )
+    p.add_argument(
+        "--retriever",
+        default="hybrid",
+        metavar="KIND[,KIND]",
+        help="检索后端,逗号分隔(hybrid / graphrag)。每个后端都跑一遍全部 preset,"
+        "是**笛卡尔积**不是叠加。graphrag 需要 Neo4j 起来、且图里已导入本语料"
+        "(--graph-ingest);它的 run key 带 `graphrag:` 前缀。",
+    )
+    p.add_argument(
+        "--graph-ingest",
+        action="store_true",
+        help="把评估语料抽进图(要 LLM,有成本)。**只对该语料** —— 靠 source "
+        "作用域隔离,不动生产图。不加这个开关时,图里有什么就用什么。",
     )
     p.add_argument(
         "--no-contextual",
@@ -802,7 +939,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     # --- 4. 配置变体 ---
     try:
         overrides = parse_overrides(args.set)
-        specs = build_specs(s.retrieval, args.preset, overrides)
+        retrievers = [r.strip() for r in str(args.retriever).split(",") if r.strip()]
+        specs = build_specs(s.retrieval, args.preset, overrides, retrievers=retrievers)
         ks = parse_ks(args.ks)
     except ValueError as exc:
         print(f"{exc}", file=sys.stderr)
@@ -827,6 +965,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         print(f"库      {collection}   定位语 = {'开' if contextual else '关'}")
         print(f"k       {','.join(map(str, ks))}   top_k={args.top_k}")
+        print(
+            "后端    "
+            + ",".join(retrievers)
+            + ("   (graphrag:先 --graph-ingest 把图建起来)" if "graphrag" in retrievers else "")
+        )
         print()
         print("将跑的配置:")
         for sp in specs:
@@ -908,6 +1051,59 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 1
     print(f"  {report.summary()}   ✓")
 
+    # --- 7.5 图:作用域 = 向量侧能返回的那些 source ---
+    #
+    # 放在锚点校验**之后**是有意的:graphrag 那条路要花 LLM 的钱,评估集自己
+    # 有问题就不该往下烧。锚点挂了会 return 1,走不到这里。
+    graph = None
+    graph_sources: list[str] | None = None
+    if "graphrag" in retrievers:
+        # 作用域不是手写的常量,而是**从评估库自己读出来**的:只有这样,
+        # 「图能跳到的范围」才和「向量能召回的范围」是同一个集合。
+        # 手写一份清单的话,两边会各自漂移,而漂移的症状是分数变低 ——
+        # 没人能看出来那是配置错了还是检索真的差。
+        graph_sources = sorted(
+            {str(d.get("source") or "") for d in store.list_docs()} - {""}
+        )
+        if not graph_sources:
+            print("评估库里没有文档,拿不到图的作用域 —— 中止。", file=sys.stderr)
+            return 1
+        graph = _open_eval_graph(s)
+
+        if args.graph_ingest:
+            print()
+            print(f"抽取实体入图({len(docs)} 篇 / {n_chunks} 块,调用 LLM)…")
+            t0 = time.time()
+            try:
+                gstats = GraphIngestPipeline(
+                    store=store, graph=graph, cfg=s.ingest
+                ).ingest_path(root, recursive=True, force=args.reingest)
+            except Exception as exc:  # noqa: BLE001
+                print(f"图导入失败:{exc}", file=sys.stderr)
+                return 1
+            print(f"  {gstats.summary()}")
+            for path, msg in list(gstats.errors)[:10]:
+                print(f"  ⚠ {path}: {msg}")
+            print(f"  耗时 {time.time() - t0:.1f}s")
+
+        # 入图之后**当场核一遍**:作用域内的块在图上有没有对应的 __Node__。
+        # 不核的话,「图是空的」和「图建好了但这题确实跳不到」在报告里长得
+        # 一模一样 —— 都是 multi_hop 全错。前者是配置事故,必须当场喊出来。
+        in_scope = graph.count_chunks(sources=graph_sources)
+        print()
+        print(
+            f"图    作用域 {len(graph_sources)} 个 source,"
+            f"作用域内的块 {in_scope} / 向量侧 {store.count()}"
+        )
+        if in_scope == 0:
+            print(
+                "  ⚠ 图里**作用域内一个块都没有** —— graphrag 这一档只会退化成"
+                "纯向量,跑出来的分不叫「GraphRAG 的效果」。\n"
+                "    先加 --graph-ingest 把图建起来(或确认 Neo4j 里 source 路径"
+                "与评估库一致)。",
+                file=sys.stderr,
+            )
+
     R.print_context(
         corpus_root=root,
         n_docs=len(docs),
@@ -955,6 +1151,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             ks=eff_ks,
             top_k=args.top_k,
             foreign_golds=foreign,
+            graph=graph,
+            graph_sources=graph_sources,
         )
         r = results[sp.name]
         R.print_run(r, ks=eff_ks)

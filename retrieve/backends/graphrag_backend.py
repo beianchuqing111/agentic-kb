@@ -36,9 +36,10 @@ Neo4j 那边只存了块的属性。块 id 两边一致(uuid5),所以拿得回�
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 from typing import Any
 
-from config import get_settings
+from config import RetrievalConfig, get_settings
 from ingest.graph_pipeline import GraphIngestPipeline
 from ingest.pipeline import IngestStats
 from retrieve.backends.base import BackendHealth, BaseBackend
@@ -71,9 +72,18 @@ class GraphRAGBackend(BaseBackend):
         store=None,
         pipeline: GraphIngestPipeline | None = None,
         retriever: HybridRetriever | None = None,
+        cfg: RetrievalConfig | None = None,
+        sources: Sequence[str] | None = None,
     ) -> None:
         s = get_settings()
         self.settings = s
+        #: 检索参数**必须**能由调用方传进来。
+        #:
+        #: 这个字段是为一个实测到的静默失效加的:原先 `retrieve()` 读的是
+        #: `self.settings.retrieval`(进程全局),于是 `--set fusion_top_k=…`、
+        #: `--preset no-threshold`、`no-rerank` 这些旋钮在 graphrag 这条路上
+        #: **全都不生效**,而报告照常出数字 —— 旋钮看着在、其实没接线。
+        self.cfg = cfg or s.retrieval
         self.graph = graph or get_graph_store()
         self.store = store or get_store()
         self.pipeline = pipeline or GraphIngestPipeline(
@@ -81,13 +91,22 @@ class GraphRAGBackend(BaseBackend):
         )
         # 块的候选召回复用混合检索那一套(稠密+稀疏+RRF),
         # 但不让它重排 —— 重排要等图那边的候选并进来之后统一做一次
-        self.retriever = retriever or HybridRetriever(store=self.store)
+        self.retriever = retriever or HybridRetriever(store=self.store, cfg=self.cfg)
+        #: 图的**作用域**:只认这些 `source` 的块(以及它们提到的实体)。
+        #: `None` = 不设限(默认,行为与加这个字段之前一致)。
+        #:
+        #: 为什么必须有:Neo4j Community 只有一个库,隔离不了。而种子实体是
+        #: 一次**全局**向量查询 —— 库里只要多进一份其它语料,它就会占掉
+        #: 种子位,把本该命中的实体挤出 top-K。那时候「图检索效果变差」的真凶
+        #: 是「库里多了不相干的东西」,和查询、和参数都没有关系。
+        #: 评估尤其要命:基线一旦不可复现,就等于没有基线。
+        self.sources = tuple(sources) if sources else None
         self._reranker = None
 
     @property
     def reranker(self):
         if self._reranker is None:
-            self._reranker = get_reranker(self.settings.retrieval)
+            self._reranker = get_reranker(self.cfg)
         return self._reranker
 
     # ----------------------------------------------------------------- #
@@ -122,8 +141,22 @@ class GraphRAGBackend(BaseBackend):
         query: str,
         top_k: int | None = None,
         debug: RetrievalDebug | None = None,
+        use_rerank: bool | None = None,
         **kwargs: Any,
     ) -> list[RetrievedChunk]:
+        # `**kwargs` 在这里**只用来报错**,不是用来兼容的 —— 见下面那段。
+        if kwargs:
+            raise TypeError(
+                f"GraphRAGBackend.retrieve() 收到不认识的参数 {sorted(kwargs)}。\n"
+                "  这条后端只接受 query / top_k / debug / use_rerank。\n"
+                "  这里**故意不吞**未知参数:上一个被静默吞掉的是 use_rerank ——\n"
+                "  它落进 **kwargs 之后没有任何人读,于是「no-rerank」这一档在\n"
+                "  graphrag 上照常重排,而报告上明明白白写着「无重排」。\n"
+                "  参数不认识就得当场报错,不能让它变成一个看着在、其实没接线的旋钮。\n"
+                "  (确实需要 query_filter 的话:图那一路是 Cypher 查询,吃不了\n"
+                "   Qdrant 的过滤器,要支持得先想清楚两路怎么共用同一个过滤条件。)"
+            )
+
         query = (query or "").strip()
         if not query:
             return []
@@ -134,8 +167,12 @@ class GraphRAGBackend(BaseBackend):
         if not self.store.exists():
             return []
 
-        cfg = self.settings.retrieval
+        cfg = self.cfg
         top_k = top_k or cfg.rerank_top_n
+        # 与 HybridRetriever.retrieve 同一口径:`None` = 跟随配置。
+        # 评估侧靠这个参数做 `no-rerank` 档的单变量对照 —— 它必须真的生效。
+        if use_rerank is None:
+            use_rerank = cfg.rerank_enabled
 
         # 复用 RetrievalDebug 的两个计数字段装图这边的量:实体数 / 事实数。
         # 字段名是混合检索那边起的,但对排查「图到底有没有起作用」够用 ——
@@ -159,7 +196,8 @@ class GraphRAGBackend(BaseBackend):
         self._attach_facts(merged, facts)
 
         # --- 统一重排一次 ---
-        if not cfg.rerank_enabled:
+        # 判据用 `use_rerank`(可能是调用方显式覆盖的),不是 `cfg.rerank_enabled`
+        if not use_rerank:
             return merged[:top_k]
         return apply_rerank(
             query, merged, top_k,
@@ -172,16 +210,11 @@ class GraphRAGBackend(BaseBackend):
 
     def _graph_context(self, query: str) -> tuple[list[dict], list[str], dict[str, float]]:
         """查种子实体并多跳展开。返回 (事实列表, 实体 id 列表, 实体分数字典)。"""
-        from llama_index.core.vector_stores.types import VectorStoreQuery
-
         cfg = self.settings.graphrag
         qvec = [float(x) for x in self.retriever.embedder.encode(query).dense[0]]
 
-        pg = self.graph.property_graph_store()
         try:
-            nodes, scores = pg.vector_query(
-                VectorStoreQuery(query_embedding=qvec, similarity_top_k=cfg.vector_top_k)
-            )
+            nodes, scores = self._seed_entities(qvec, cfg.vector_top_k)
         except Exception as exc:  # noqa: BLE001
             # 图这一路挂了不该让整个检索失败 —— 下面还有向量那一路兜底。
             # 但这一定要记日志:静默降级会让"图检索没效果"变成一个查不出原因的谜。
@@ -240,6 +273,44 @@ class GraphRAGBackend(BaseBackend):
         entity_ids = list(dict.fromkeys(entity_ids))
         return facts, entity_ids, seed_scores
 
+    def _seed_entities(
+        self, qvec: list[float], want: int
+    ) -> tuple[list[Any], list[float]]:
+        """向量索引取种子实体。设了 `sources` 就只认**作用域内**的实体。"""
+        from llama_index.core.vector_stores.types import VectorStoreQuery
+
+        # 有过滤就必须**多取**:过滤在取回之后做,只取 top-K 的话,库里并存
+        # 别的语料时种子位会被它们占掉,表现为「图突然一个实体都找不到」——
+        # 而真凶是库里多了不相干的东西,跟这次查询毫无关系。
+        ask = want if self.sources is None else want * 4
+        pg = self.graph.property_graph_store()
+        nodes, scores = pg.vector_query(
+            VectorStoreQuery(query_embedding=qvec, similarity_top_k=ask)
+        )
+        if self.sources is None or not nodes:
+            return list(nodes), [float(s) for s in scores]
+
+        allow = self._entities_in_scope([n.id for n in nodes])
+        pairs = [(n, float(s)) for n, s in zip(nodes, scores) if n.id in allow][:want]
+        return [n for n, _ in pairs], [s for _, s in pairs]
+
+    def _entities_in_scope(self, ids: list[str]) -> set[str]:
+        """这些实体里,哪些被**作用域内**的块提到过。
+
+        实体节点本身不属于任何一篇文档(它是被所有提到它的块共享的),
+        所以「合规」的判据只能是「它至少粘着一个作用域内的块」。
+        """
+        rows = self.graph.run(
+            f"""
+            MATCH (c:`{BASE_NODE_LABEL}`)-[:{MENTIONS_REL}]->(e:`{BASE_ENTITY_LABEL}`)
+            WHERE e.id IN $ids AND c.source IN $sources
+            RETURN DISTINCT e.id AS id
+            """,
+            ids=ids,
+            sources=list(self.sources or ()),
+        )
+        return {r["id"] for r in rows if r.get("id")}
+
     # ----------------------------------------------------------------- #
     # 块取证
     # ----------------------------------------------------------------- #
@@ -261,6 +332,7 @@ class GraphRAGBackend(BaseBackend):
             f"""
             MATCH (c:`{BASE_NODE_LABEL}`)-[:{MENTIONS_REL}]->(e:`{BASE_ENTITY_LABEL}`)
             WHERE e.id IN $ids
+              AND ($sources IS NULL OR c.source IN $sources)
             RETURN c.doc_id AS doc_id, c.chunk_index AS chunk_index,
                    count(DISTINCT e.id) AS hits,
                    collect(DISTINCT e.id) AS ents
@@ -268,6 +340,7 @@ class GraphRAGBackend(BaseBackend):
             LIMIT $lim
             """,
             ids=entity_ids,
+            sources=list(self.sources) if self.sources else None,
             lim=GRAPH_CHUNK_LIMIT,
         )
         if not rows:
@@ -390,11 +463,12 @@ class GraphRAGBackend(BaseBackend):
             "neo4j": (
                 f"{g.get('edition')} {g.get('version')}" if g.get("ok") else None
             ),
-            "collection": self.settings.qdrant.collection,
+            "collection": self.store.cfg.collection,
             "database": self.settings.neo4j.database,
             "llm_configured": self.settings.llm.configured,
             "extraction": self.settings.llm.configured,
-            "rerank": self.settings.retrieval.rerank_enabled,
+            "rerank": self.cfg.rerank_enabled,
+            "sources_scoped": len(self.sources) if self.sources else None,
         }
         ok = bool(q.get("ok")) and bool(g.get("ok"))
         err = ""
@@ -409,7 +483,7 @@ class GraphRAGBackend(BaseBackend):
         g = self.graph.stats()
         return {
             "backend": self.name,
-            "collection": self.settings.qdrant.collection,
+            "collection": self.store.cfg.collection,
             "database": self.settings.neo4j.database,
             "docs": len(docs),
             "chunks": self.store.count() if self.store.exists() else 0,

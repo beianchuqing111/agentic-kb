@@ -319,6 +319,27 @@ class Neo4jGraphStore:
         except Exception as exc:  # noqa: BLE001
             return {"error": str(exc)}
 
+    def count_chunks(self, sources: Sequence[str] | None = None) -> int:
+        """数块节点,可以只看某几个 `source`。
+
+        存在的理由是**评估**要当场核对「图里到底有没有这批语料」:
+        「图是空的」和「图建好了但这题跳不到」在报告里长得一模一样
+        (都是 multi_hop 全错),而前者是配置事故,必须能一眼分开。
+        实体节点也带 `__Node__`,所以排除掉 —— 同 `stats()` 里那个坑。
+        """
+        if sources is None:
+            rows = self.run(
+                f"MATCH (n:`{BASE_NODE_LABEL}`) WHERE NOT n:`{BASE_ENTITY_LABEL}` "
+                "RETURN count(n) AS c"
+            )
+        else:
+            rows = self.run(
+                f"MATCH (n:`{BASE_NODE_LABEL}`) WHERE NOT n:`{BASE_ENTITY_LABEL}` "
+                "AND n.source IN $sources RETURN count(n) AS c",
+                sources=list(sources),
+            )
+        return int(rows[0]["c"]) if rows else 0
+
     def clear(self) -> None:
         """清空图。**危险操作**,只应在显式要求时调用。
 
