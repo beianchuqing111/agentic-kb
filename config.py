@@ -25,6 +25,16 @@ CACHE_DIR = BASE_DIR / "cache"
 # 校验「路径有没有跑出沙箱」需要一个**唯一可信的根**,根要是可配的,
 # 校验就成了「拿模型的路径比模型的路径」,等于没校验。
 EXPORT_DIR = BASE_DIR / "exports"
+# 上传文件的落盘处。放这里而不是各界面各写一份:Gradio(`webui.py`)和
+# API(`api/app.py`)都要往里放文件,而**两边必须落到同一个目录** ——
+# 块 payload 里记的 `source` 就是这个路径,换个目录写会让同一份文档
+# 经两个入口导入后溯源到两个地方,而且看起来都"正常"。
+UPLOAD_DIR = BASE_DIR / "uploads"
+# 允许上传的扩展名。和 `UPLOAD_DIR` 同样的理由放在这里:两个入口都拿它
+# 做**服务端**校验(`webui.py` 传给 gr.File 做客户端过滤,`api/app.py`
+# 用来拒掉不认的类型)。两边各写一份的话,API 收了 `.exe` 而 Gradio 不收,
+# 就成了"同一个系统两个入口两套规矩",而后者更容易被当成 bug 报上来。
+UPLOAD_EXTS = [".txt", ".md", ".markdown", ".text", ".log", ".pdf", ".docx"]
 
 load_dotenv(BASE_DIR / ".env")
 

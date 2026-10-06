@@ -74,7 +74,7 @@ logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(name)s: %(mes
 for _n in _NOISY_LOGGERS:
     logging.getLogger(_n).setLevel(logging.ERROR)
 
-from config import BackendType, get_settings  # noqa: E402
+from config import UPLOAD_DIR, UPLOAD_EXTS, BackendType, get_settings  # noqa: E402
 from llm.client import LLMError, LLMNotConfigured, get_llm  # noqa: E402
 from retrieve.backends import build_backend, set_backend  # noqa: E402
 from agent.tools import format_hits  # noqa: E402
@@ -86,12 +86,11 @@ import gradio as gr  # noqa: E402
 
 log = logging.getLogger("webui")
 
-UPLOAD_DIR = BASE_DIR / "uploads"
+# UPLOAD_DIR 现在定义在 config 里(和 API 共用同一个目录,见那边的注释)。
 
 # 支持的格式 —— 和 ingest/loader.py 的 SUPPORTED_EXTS 保持一致。
-# Gradio 的文件选择器按扩展名过滤,漏了 .markdown/.text/.log 会让用户
-# 选不到本可以导入的文件。
-UPLOAD_EXTS = [".txt", ".md", ".markdown", ".text", ".log", ".pdf", ".docx"]
+# 扩展名白名单在 `config.py` —— API(`api/app.py`)拿同一份做服务端校验,
+# 两边各写一份迟早会出现"一个入口收、另一个不收"。
 
 
 # --------------------------------------------------------------------- #

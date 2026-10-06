@@ -41,7 +41,13 @@ from qdrant_client import models as qm
 
 from config import QdrantConfig, RetrievalConfig, get_settings
 from embed.sparse_convert import to_sparse_vector
-from store.versioning import STATUS_CURRENT, STATUS_FIELD
+from store.versioning import (
+    STATUS_CURRENT,
+    STATUS_FIELD,
+    STATUS_SUPERSEDED,
+    VERSION_FIELDS,
+    status_of,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -384,7 +390,18 @@ class QdrantStore:
         )
 
     def list_docs(self) -> list[dict[str, Any]]:
-        """列出库里有哪些文档 —— 运维查询,不参与检索。"""
+        """列出库里有哪些文档 —— 运维查询,不参与检索。
+
+        带上版本字段:界面上要能标出「这篇已废止」。**不能靠再查一次**
+        —— 列表和标记是两次独立的读,中间有人标记了失效,列表就会显示
+        「有效」而它其实已经查不到了 (见 `retrieve/hybrid.py` 里同一条
+        理由)。所以版本信息跟着列表本身一起取出来。
+
+        `status` 是**文档级**的,但底层是逐块存的,所以这里按块聚合:
+        只要有一块是 superseded 就算这篇被标记过 —— 偏向"标出来"而不是
+        "藏起来",因为漏标会让用户对着查不到的结果找不到原因。真的有块
+        不一致时额外给 `mixed=True`,让界面能提示"这篇状态不统一"。
+        """
         if not self.exists():
             return []
         seen: dict[str, dict[str, Any]] = {}
@@ -394,21 +411,43 @@ class QdrantStore:
                 collection_name=self.cfg.collection,
                 limit=512,
                 offset=offset,
-                with_payload=["doc_id", "source", "title"],
+                with_payload=[
+                    "doc_id", "source", "title",
+                    STATUS_FIELD, *VERSION_FIELDS,
+                ],
                 with_vectors=False,
             )
             for r in records:
                 p = r.payload or {}
                 d = p.get("doc_id")
-                if d and d not in seen:
+                if not d:
+                    continue
+                st = status_of(p)
+                if d not in seen:
                     seen[d] = {
                         "doc_id": d,
                         "source": p.get("source", ""),
                         "title": p.get("title", ""),
                         "chunks": 0,
+                        "status": st,
+                        "mixed": False,
+                        # 版本字段取**第一块非空**的值。同一篇文档的各块应当
+                        # 一致(入库时按文件名统一写),真不一致时 `mixed`
+                        # 会把状态标出来,版本号取哪个都不至于误导。
+                        "doc_version": "",
+                        "effective_from": "",
+                        "effective_to": "",
                     }
-                if d:
-                    seen[d]["chunks"] += 1
+                rec = seen[d]
+                rec["chunks"] += 1
+                if st != rec["status"]:
+                    rec["mixed"] = True
+                    if st == STATUS_SUPERSEDED:
+                        # 一篇里出现了失效块 → 整篇按"已标记"显示
+                        rec["status"] = STATUS_SUPERSEDED
+                for k in VERSION_FIELDS:
+                    if not rec[k] and p.get(k):
+                        rec[k] = str(p.get(k))
             if offset is None:
                 break
         return sorted(seen.values(), key=lambda x: x["doc_id"])

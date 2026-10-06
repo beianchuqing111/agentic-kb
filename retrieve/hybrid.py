@@ -35,8 +35,8 @@ from qdrant_client import models as qm
 from config import RetrievalConfig, get_settings
 from embed.bge_m3 import get_embedder
 from retrieve.reranker import get_reranker
-from store.qdrant_store import QdrantStore, get_store
-from store.versioning import visible_filter
+from store.qdrant_store import QdrantStore, get_store, point_id
+from store.versioning import status_of, visible_filter
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +57,16 @@ class RetrievedChunk:
     rerank_score: float | None = None
     dense_rank: int | None = None   # 在稠密那一路的排名(0 基),None = 没被召回
     sparse_rank: int | None = None
+    # 版本信息。**必须跟着结果一路走到界面上**:用户看到一条答案,
+    # 要能当场知道「这条是现行版还是已被废止的那一版」。检索时若把
+    # 它丢在 payload 里不带出来,前端就只能再按 doc_id 回头查一次库,
+    # 而那次查询拿到的状态**可能已经和这次召回时不同**(中间有人标记了
+    # 失效)—— 界面上就会出现"召回到了却说它是失效的"这种自相矛盾的显示。
+    # 空串 = 没写过这个字段,不是"未知版本"。
+    status: str = ""
+    doc_version: str = ""
+    effective_from: str = ""
+    effective_to: str = ""
     # 后端特有的溯源信息。混合检索往里放 ranking 细节,
     # 图检索往里放命中的实体和多跳路径 —— 上层统一按 RetrievedChunk 处理。
     meta: dict = field(default_factory=dict)
@@ -85,6 +95,14 @@ class RetrievedChunk:
             context=p.get("context", ""),
             score=float(score),
             rrf_score=float(score),
+            # 走 `status_of` 而不是直接取 `p.get("status")`:那一个函数是
+            # 「缺字段/取值不认识一律当 current」这条约定的**唯一**实现,
+            # 这里再写一遍 `or STATUS_CURRENT` 就是第二份口径 —— 以后改
+            # 约定必然只改一处,另一处变成鬼故事。
+            status=status_of(p),
+            doc_version=str(p.get("doc_version") or ""),
+            effective_from=str(p.get("effective_from") or ""),
+            effective_to=str(p.get("effective_to") or ""),
         )
 
     @classmethod
@@ -196,8 +214,20 @@ class HybridRetriever:
         query_filter: qm.Filter | None = None,
         use_rerank: bool | None = None,
         debug: RetrievalDebug | None = None,
+        include_superseded: bool | None = None,
+        explain: bool = False,
     ) -> list[RetrievedChunk]:
-        """检索。返回按相关性降序的结果。"""
+        """检索。返回按相关性降序的结果。
+
+        `include_superseded=None`(默认)用检索配置里的口径;显式传 True/False
+        则**只影响这一次调用**。见下面「版本过滤」那段。
+
+        `explain=True` 会把每条结果**是被哪一路召回的、那一路里排第几**
+        填进 `dense_rank`/`sparse_rank`。代价是额外两次 Qdrant 查询(见
+        下面那段),所以默认不做。**和 `debug` 不是一回事**:`debug` 是
+        「把这次检索的中间量收集到一个对象里给我看」,`explain` 是
+        「把解释写回结果本身,好让它一路序列化到前端」。两个都传就都做。
+        """
         query = (query or "").strip()
         if not query:
             return []
@@ -213,11 +243,18 @@ class HybridRetriever:
         # 漏掉它的后果是"调试视图里能看见已被标记失效的块,正式结果里没有"
         # —— 排查版本相关的问题时,这个假象比没有调试信息更坏。
         #
-        # 判据用 `cfg.include_superseded`(检索配置),不给调用方参数:
-        # 这是**整个库的口径**,不是单次查询的偏好。允许按次切换的话,
-        # 同一条问题在不同入口会得到不同答案,而"为什么这次召回了废止条款"
-        # 就没人能解释了。
-        if not cfg.include_superseded:
+        # 口径:配置里的 `include_superseded` 是**默认值**,调用方可以显式
+        # 覆盖单次调用。「查废止条款原来怎么写的」是一次明确的、用户自己
+        # 按下去的动作,不给这个开关的话,前端就只能让用户改环境变量重启 ——
+        # 那个做不到的开关等于没有这个功能。
+        #
+        # 之所以默认写在配置里而不是让每次调用自己决定:不显式指定的场合
+        # (CLI、评测、智能体的工具调用)必须**行为一致**。同一批题跑评测时
+        # 有的召回废止条款、有的不召回,那批数字就没法比了。
+        include_hist = (
+            cfg.include_superseded if include_superseded is None else include_superseded
+        )
+        if not include_hist:
             query_filter = visible_filter(query_filter)
 
         # --- 1. 一次前向出双向量 ---
@@ -239,19 +276,36 @@ class HybridRetriever:
         if debug is not None:
             debug.fused_hits = len(fused)
             debug.fused_order = [r.doc_id for r in results]
-            # 单独再问一次两路的原始排名,只为可观测性 ——
-            # 融合后名次里看不出「是谁召回了它」
+
+        if debug is not None or explain:
+            # 单独再问一次两路的原始排名 —— 融合后名次里看不出「是谁召回了它」。
+            #
+            # 为什么默认不做:`query_hybrid` 是一次带两个 prefetch 的查询,
+            # 稠密和稀疏各已经搜过一遍了,但**融合后的结果不带每路的原始名次**,
+            # 想要名次就没有别的办法,只能把两路再各查一遍。这等于把 ANN 的
+            # 搜索量翻倍,而换来的只是可解释性 —— 所以它必须由调用方明确要
+            # (`explain=True`),或者是在开调试视图(`debug`)。默认路径一次
+            # 都不多查。
             try:
                 dh, sh = self.store.query_paths(q_dense, q_sparse, query_filter=query_filter)
-                debug.dense_hits = len(dh)
-                debug.sparse_hits = len(sh)
-                debug.dense_order = [(p.payload or {}).get("doc_id", "") for p in dh]
-                debug.sparse_order = [(p.payload or {}).get("doc_id", "") for p in sh]
-                d_rank = {pid: i for i, pid in enumerate(debug.dense_order)}
-                s_rank = {pid: i for i, pid in enumerate(debug.sparse_order)}
+                dense_order = [(p.payload or {}).get("doc_id", "") for p in dh]
+                sparse_order = [(p.payload or {}).get("doc_id", "") for p in sh]
+                if debug is not None:
+                    debug.dense_hits = len(dh)
+                    debug.sparse_hits = len(sh)
+                    debug.dense_order = dense_order
+                    debug.sparse_order = sparse_order
+                # 名次要绑到**块**上,不是绑到文档上:一篇规程有六七个块,
+                # 按 doc_id 建表会被同一篇文档后面的块反复覆盖,于是这篇文档
+                # 的每个块都拿到同一个名次 —— 而「这块是稠密路第 2 还是第 40」
+                # 正是要看的东西。point id 是 (doc_id, chunk_index) 的确定性
+                # 函数(store.point_id),所以不必往 payload 里加字段就能对上。
+                d_rank = {p.id: i for i, p in enumerate(dh)}
+                s_rank = {p.id: i for i, p in enumerate(sh)}
                 for r in results:
-                    r.dense_rank = d_rank.get(r.doc_id)
-                    r.sparse_rank = s_rank.get(r.doc_id)
+                    pid = point_id(r.doc_id, r.chunk_index)
+                    r.dense_rank = d_rank.get(pid)
+                    r.sparse_rank = s_rank.get(pid)
             except Exception as exc:  # noqa: BLE001 - 调试信息不该影响主流程
                 logger.debug("抓取原始排名失败: %s", exc)
 

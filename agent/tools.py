@@ -270,13 +270,28 @@ def format_hits(hits: Sequence[RetrievedChunk]) -> str:
     return "\n".join(lines).strip()
 
 
-def _build_kb_tool(top_k: int | None = None) -> Tool:
+def _build_kb_tool(
+    top_k: int | None = None, include_superseded: bool | None = None
+) -> Tool:
+    """知识库检索工具。
+
+    `include_superseded` 和 `top_k` 一样是**构造期**参数,不是运行时参数 ——
+    工具表每个请求建一份,所以"这一次问答是否放行历史版本"在建表时就定死了。
+
+    这个口子必须留:API 的 `/api/ask` 请求体带 `include_superseded`,如果不
+    一路接到这里,那个字段就是个**看着在、其实没接线**的旋钮 —— 前面刚为
+    `use_rerank` 踩过一次(`graphrag_backend.retrieve` 静默吞掉它,报告上
+    照写"无重排"),同样的错不犯第二次。
+    """
+
     def run(arg: str) -> str:
         query = (arg or "").strip()
         if not query:
             return "错误:查询为空。请在 Action Input 里给出要检索的问题或关键词。"
         backend = get_backend()
-        hits = backend.retrieve(query, top_k=top_k)
+        hits = backend.retrieve(
+            query, top_k=top_k, include_superseded=include_superseded
+        )
         if not hits:
             # 明确告诉模型「换个说法再试」或「转联网」—— 这句话是替模型做的
             # 决策提示,不是资料,所以不套 UNTRUSTED 包装
@@ -663,6 +678,7 @@ def build_default_tools(
     store_override: Any | None = None,
     with_write_tools: bool = True,
     exports_dir: Path | None = None,
+    include_superseded: bool | None = None,
 ) -> list[Tool]:
     """默认工具集。参数留出口是为了自检脚本能注入替身。
 
@@ -672,7 +688,7 @@ def build_default_tools(
     让「模型怎么没看见这工具」和「这工具怎么被拒了」分不清。
     """
     tools = [
-        _build_kb_tool(top_k),
+        _build_kb_tool(top_k, include_superseded),
         _build_web_tool(searcher, web_max_results),
         _build_docs_tool(store_override),
     ]

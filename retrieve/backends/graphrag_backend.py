@@ -143,13 +143,15 @@ class GraphRAGBackend(BaseBackend):
         top_k: int | None = None,
         debug: RetrievalDebug | None = None,
         use_rerank: bool | None = None,
+        include_superseded: bool | None = None,
+        explain: bool = False,
         **kwargs: Any,
     ) -> list[RetrievedChunk]:
         # `**kwargs` 在这里**只用来报错**,不是用来兼容的 —— 见下面那段。
         if kwargs:
             raise TypeError(
                 f"GraphRAGBackend.retrieve() 收到不认识的参数 {sorted(kwargs)}。\n"
-                "  这条后端只接受 query / top_k / debug / use_rerank。\n"
+                "  这条后端只接受 query / top_k / debug / use_rerank / include_superseded / explain。\n"
                 "  这里**故意不吞**未知参数:上一个被静默吞掉的是 use_rerank ——\n"
                 "  它落进 **kwargs 之后没有任何人读,于是「no-rerank」这一档在\n"
                 "  graphrag 上照常重排,而报告上明明白白写着「无重排」。\n"
@@ -184,14 +186,35 @@ class GraphRAGBackend(BaseBackend):
             debug.sparse_hits = len(facts)
 
         # --- 候选块:图反查的 + 向量召回的 ---
-        graph_chunks = self._chunks_mentioning(entity_ids)
+        # 版本口径**和 use_rerank 是同一个形状**:None = 跟随配置。
+        # 两路必须拿到**同一个值** —— 图那路下面是事后按 payload 判,
+        # 向量那路是下 Qdrant filter,判得不一样就会"图召回的失效块被挡了、
+        # 向量召回的没挡"(或反过来),而合并之后完全看不出来是哪一路漏的。
+        include_hist = (
+            cfg.include_superseded if include_superseded is None else include_superseded
+        )
+        graph_chunks = self._chunks_mentioning(entity_ids, include_superseded=include_hist)
+        # `explain` 要透到这一层:合并后**来自向量那一路的那部分块**
+        # 才可能有名次,而算名次的动作发生在这个内层调用里。不带下去的话,
+        # 走 graphrag 后端时 `explain=True` 就是个看着在、其实没接线的旋钮。
+        #
+        # 内层**只收 explain、不收 debug**:上面 `debug.dense_hits` 已经被
+        # 借去装「种子实体数」了,把同一个 debug 对象再交给内层,它会拿真正的
+        # 稠密命中数把它覆盖掉 —— 调试视图里就会显示一个既不是实体数也不是
+        # 命中数的东西。这正是 explain 与 debug 要分成两个参数的原因。
         fused = self.retriever.retrieve(
-            query, top_k=cfg.fusion_top_k, use_rerank=False
+            query, top_k=cfg.fusion_top_k, use_rerank=False,
+            include_superseded=include_hist, explain=explain,
         )
 
         merged = self._merge(graph_chunks, fused)
         if not merged:
             return []
+
+        # 只从图那一路来的块,`dense_rank`/`sparse_rank` 保持 None 是**对的**:
+        # 两路向量召回确实没召回它,它是靠实体多跳捞上来的。这个 null 本身
+        # 就是有用的信息(它一眼说明「这条是图给的」),不要在这里补个 0
+        # 假装它排第一。
 
         # 把事实挂到相关块上 —— 上层(ReAct/生成)要能看见「为什么这些块被拉进来」
         self._attach_facts(merged, facts)
@@ -324,7 +347,9 @@ class GraphRAGBackend(BaseBackend):
     # 块取证
     # ----------------------------------------------------------------- #
 
-    def _chunks_mentioning(self, entity_ids: list[str]) -> list[tuple[RetrievedChunk, float, list[str]]]:
+    def _chunks_mentioning(
+        self, entity_ids: list[str], include_superseded: bool = False
+    ) -> list[tuple[RetrievedChunk, float, list[str]]]:
         """反查「哪些块提到了这些实体」,再把正文从 Qdrant 取回来。
 
         这一步是图检索真正的价值所在:实体多跳走到的那些块,**正文里往往
@@ -372,10 +397,15 @@ class GraphRAGBackend(BaseBackend):
         # 才从 Qdrant 取 payload 的。好在取 payload 这一步本来就有,
         # 在这里判只多一次内存比较,不用为它多跑一趟查询。
         #
-        # ⚠️ 判据必须和向量那路**同源**(`include_superseded` + `is_superseded`),
-        # 不能在这边另写一套。两路判得不一样,结果就是"向量召回到的失效块被
-        # 挡了、图召回的没挡",而合并之后完全看不出来是哪一路漏的。
-        drop_superseded = not self.cfg.include_superseded
+        # ⚠️ 判据必须和向量那路**同源**(调用方传下来的 `include_superseded`
+        # 参数 + `is_superseded`),不能在这边另读一遍配置。两路判得不一样,
+        # 结果就是"向量召回到的失效块被挡了、图召回的没挡",而合并之后
+        # 完全看不出来是哪一路漏的。
+        #
+        # 默认值给 False 而不是 `self.cfg.include_superseded`:这个参数由
+        # `retrieve()` 解析好再传进来(唯一调用点),在这里再兜一次配置会让
+        # 两条取值路径并存 —— 以后改口径必然只改一处。
+        drop_superseded = not include_superseded
 
         out: list[tuple[RetrievedChunk, float, list[str]]] = []
         missing = 0

@@ -32,6 +32,10 @@ tavily-python
 fastapi>=0.110
 uvicorn>=0.27
 pydantic>=2.5
+# `/api/ingest/upload` 收 multipart。少了它 FastAPI 会在**导入时**就报错
+# ("Form data requires python-multipart"),而不是等到那个路由被调用 ——
+# 于是整个 API 起不来,症状和 multipart 一点关系都看不出来。
+python-multipart>=0.0.9
 
 # ---- 前端 ----
 # 界面在 webui.py。py310 里已有 5.16.0,不用重装。

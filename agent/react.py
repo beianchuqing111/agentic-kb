@@ -24,6 +24,18 @@
 单条 Observation 截到 `tool_result_max_chars`(默认 8000),轮数上限
 `max_iterations`(默认 8)。两者相乘就是历史的硬上限(≈64KB),
 所以这里没有再实现一套全局预算收缩:上限已经由配置兜住了。
+
+过程可观测:`on_event` 回调
+--------------------------
+`run()` 收一个可选的 `on_event`,每有动作就丢一个 dict 出去。是为前端
+流式展示加的 —— 一次问答要跑十几秒到几十秒,中间什么都不显示的话,
+界面上和卡死没有区别。
+
+**回调抛异常一律吞掉,只记日志。** 这个方向是刻意选的:回调的另一头是
+网络连接,客户端随时可能断开;而"用户关了页面"不该让正在跑的智能体
+崩在半路 —— 那会把一次显示问题变成一次执行问题。代价是断线后仍会
+把剩下的 LLM 调用跑完(会花钱),这个取舍在本地单用户场景下划算;
+真要省这笔钱,应该在回调之外用取消机制做,而不是让异常穿过去。
 """
 
 from __future__ import annotations
@@ -31,7 +43,7 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass, field
-from typing import Sequence
+from typing import Any, Callable, Sequence
 
 from config import AgentConfig, get_settings
 from llm.client import ChatResult, LLMClient, get_llm
@@ -145,6 +157,13 @@ _QUOTE_PAIRS = (
     ("『", "』"),
     ("《", "》"),
 )
+
+
+#: 过程事件回调。收一个 dict,字段见 `AgentStep` 与 `run()` 里的 emit 点。
+#: 用裸 dict 而不是再定义一族 dataclass:这些事件是**跨进程边界**用的
+#: (要 JSON 序列化给前端),定义成 dataclass 还得再写一遍转换,两边
+#: 一起漂移的风险比省下的几个字段名大。
+EventSink = Callable[[dict], None]
 
 
 @dataclass
@@ -354,7 +373,21 @@ class ReActAgent:
             prompt += "\n# 补充要求\n" + self.system_extra.strip() + "\n"
         return prompt
 
-    def run(self, question: str) -> AgentResult:
+    def _emit(self, sink: EventSink | None, event: dict) -> None:
+        """丢一个过程事件出去。**回调的一起异常都在这里被吞掉。**
+
+        见模块头「过程可观测」:回调的另一头是网络,客户端断开是常态,
+        不能让它把智能体的执行带崩。吞掉而不是上抛,是有代价的(断线后
+        剩下的 LLM 调用照跑),但那笔钱换的是「显示问题不会变成执行问题」。
+        """
+        if sink is None:
+            return
+        try:
+            sink(event)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("过程事件回调失败(已忽略): %s: %s", type(exc).__name__, exc)
+
+    def run(self, question: str, on_event: EventSink | None = None) -> AgentResult:
         question = (question or "").strip()
         if not question:
             raise ValueError("问题为空")
@@ -362,6 +395,12 @@ class ReActAgent:
         # LLM 没配就直接抛。ReAct 没有「降级到不用模型」这条路 ——
         # 与其返回一个看不出毛病的空答案,不如在入口就说清楚。
         self.llm.require_configured()
+
+        self._emit(on_event, {
+            "type": "start",
+            "question": question,
+            "max_iter": self.cfg.max_iterations,
+        })
 
         messages: list[dict[str, str]] = [
             {"role": "system", "content": self.system_prompt()},
@@ -397,14 +436,25 @@ class ReActAgent:
             if call is None:
                 # 既没给 Final Answer 也没给合法 Action。先纠正,别急着当答案。
                 fmt_retries += 1
+                if fmt_retries <= self.cfg.max_format_retries:
+                    # 只在"还会再试一次"时报,超过上限那条走下面的兜底分支
+                    # 一起报 —— 否则同一件事会在界面上闪两次。
+                    self._emit(on_event, {
+                        "type": "warning",
+                        "index": i,
+                        "message": f"第 {i} 轮输出不符合格式,已要求重试",
+                    })
                 if fmt_retries > self.cfg.max_format_retries:
                     # 兜底:模型显然不打算按格式走了。它写的散文里往往已经
                     # 包含了答案,原样返回比报错或返回空更有用。
                     answer = text
                     stop_reason = "unparsed_output"
-                    warnings.append(
-                        f"连续 {fmt_retries} 轮输出不符合 ReAct 格式,已将最后一段文本原样作为答案"
+                    msg = (
+                        f"连续 {fmt_retries} 轮输出不符合 ReAct 格式,"
+                        "已将最后一段文本原样作为答案"
                     )
+                    warnings.append(msg)
+                    self._emit(on_event, {"type": "warning", "index": i, "message": msg})
                     break
                 warnings.append(f"第 {i} 轮输出不符合格式,已要求重试")
                 if text:
@@ -420,6 +470,17 @@ class ReActAgent:
                 action=call.name,
                 action_input=call.arg,
             )
+
+            # 在**执行之前**报一次。检索/联网动辄几秒到几十秒,不报的话
+            # 界面上停在这一步和卡死没有区别 —— 而这一步恰恰是最该显示
+            # "正在做什么"的时候。
+            self._emit(on_event, {
+                "type": "action",
+                "index": i,
+                "tool": call.name,
+                "input": call.arg,
+                "thought": step.thought,
+            })
 
             key = (call.name.strip().lower(), call.arg)
             if key in cache:
@@ -443,6 +504,18 @@ class ReActAgent:
                         f"{self.cfg.tool_result_max_chars}"
                     )
 
+            self._emit(on_event, {
+                "type": "step",
+                "index": i,
+                "tool": step.action,
+                "input": step.action_input,
+                "thought": step.thought,
+                "observation": step.observation,
+                "truncated": step.truncated,
+                "repeated": step.repeated,
+                "note": step.note,
+            })
+
             steps.append(step)
             messages.append({"role": "assistant", "content": text})
             messages.append(
@@ -450,16 +523,16 @@ class ReActAgent:
             )
 
         if stop_reason == "max_iterations":
+            msg = f"达到最大轮次 {self.cfg.max_iterations},已强制要求模型用现有资料作答"
+            warnings.append(msg)
+            self._emit(on_event, {"type": "warning", "message": msg})
             forced, fpt, fct = self._force_answer(messages, steps)
             pt += fpt
             ct += fct
             calls += 1
             answer = forced
-            warnings.append(
-                f"达到最大轮次 {self.cfg.max_iterations},已强制要求模型用现有资料作答"
-            )
 
-        return AgentResult(
+        result = AgentResult(
             question=question,
             answer=answer,
             steps=steps,
@@ -467,6 +540,11 @@ class ReActAgent:
             usage={"prompt": pt, "completion": ct, "calls": calls},
             warnings=warnings,
         )
+        # 收尾事件带上完整结果:流式那一路要靠它拿到和 `run()` 返回值
+        # **一模一样**的东西(用量、停止原因、警告)。只发 answer 的话,
+        # 流式和非流式两条路的输出会慢慢长歪。
+        self._emit(on_event, {"type": "done", "result": result})
+        return result
 
     def answer(self, question: str) -> str:
         """只要答案的便捷入口。"""
@@ -525,6 +603,7 @@ __all__ = [
     "AgentCall",
     "AgentResult",
     "AgentStep",
+    "EventSink",
     "ReActAgent",
     "STOP_SEQUENCES",
     "build_agent",
