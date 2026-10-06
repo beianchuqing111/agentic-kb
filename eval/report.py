@@ -94,6 +94,12 @@ class ItemDetail:
     # 标签 → "dense" / "sparse" / "both" / "-"(两路都没召回它所属的文档)。
     # **文档级**:见 runner 模块头,`dense_order` 是 doc_id 列表。
     doc_source: dict[str, str] = field(default_factory=dict)
+    # 返回的块里,有几条是**图那一路**多召回的(hybrid 档恒为 0)。
+    #
+    # 这个字段存在的唯一目的,是把「图没接上」和「图接上了但没用」分开:
+    # 两者在聚合分上完全一样(都是没变化),而前者是配置事故,必须能被指认。
+    # 没有它,一份「graphrag 分数 = hybrid 分数」的报告什么也证明不了。
+    graph_hits: int = 0
 
     @property
     def missed(self) -> bool:

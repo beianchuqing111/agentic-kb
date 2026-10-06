@@ -559,6 +559,7 @@ def run_spec(
                 doc_source={
                     _label(g.key, labels): srcmap.get(g.doc_id, "-") for g in golds
                 },
+                graph_hits=sum(1 for h in hits if h.meta.get("from_graph")),
             )
         )
 
@@ -642,11 +643,30 @@ def _warn_on_noop(results: Mapping[str, R.RunResult]) -> None:
     for i in range(len(runs)):
         for j in range(i + 1, len(runs)):
             a, b = runs[i], runs[j]
-            if a.retrieval == b.retrieval:
+            # 参数相同**且**后端相同才跳过。后端不同也算「本该有差别」——
+            # 换了一整条检索通路而分数一位不差,和换了个旋钮而分数一位不差
+            # 是同一个信号:那个差异没接线。
+            if a.retrieval == b.retrieval and a.retriever == b.retriever:
                 continue
             if a.aggregates == b.aggregates and [
                 (d.item_id, d.rank) for d in a.per_item
             ] == [(d.item_id, d.rank) for d in b.per_item]:
+                if a.retriever != b.retriever:
+                    hits = sum(d.graph_hits for d in b.per_item) + sum(
+                        d.graph_hits for d in a.per_item
+                    )
+                    print(
+                        f"  ⚠ {a.spec}({a.retriever}) 与 {b.spec}({b.retriever}) "
+                        "分数**逐位相同**。\n"
+                        f"    逐题的图命中合计 = {hits}。"
+                        + (
+                            "  → 图那一路**一条都没多召回**,这一档等价于纯向量;"
+                            "先别把它当「GraphRAG 没用」的结论,查通路接上了没。"
+                            if hits == 0
+                            else "  → 图确实召回了块但没改变名次,这才是一个真结论。"
+                        )
+                    )
+                    continue
                 diff = {
                     k: (a.retrieval.get(k), b.retrieval.get(k))
                     for k in set(a.retrieval) | set(b.retrieval)
