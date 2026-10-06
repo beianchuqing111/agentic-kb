@@ -36,6 +36,7 @@ from config import RetrievalConfig, get_settings
 from embed.bge_m3 import get_embedder
 from retrieve.reranker import get_reranker
 from store.qdrant_store import QdrantStore, get_store
+from store.versioning import visible_filter
 
 logger = logging.getLogger(__name__)
 
@@ -205,6 +206,19 @@ class HybridRetriever:
         top_k = top_k or cfg.rerank_top_n
         if use_rerank is None:
             use_rerank = cfg.rerank_enabled
+
+        # --- 0. 版本过滤 ---
+        # 在这里合一次,而不是在三个 `query_filter=` 调用点各写一遍:
+        # 下面还有 `query_paths` 那条**只为可观测性**的支路(debug 用),
+        # 漏掉它的后果是"调试视图里能看见已被标记失效的块,正式结果里没有"
+        # —— 排查版本相关的问题时,这个假象比没有调试信息更坏。
+        #
+        # 判据用 `cfg.include_superseded`(检索配置),不给调用方参数:
+        # 这是**整个库的口径**,不是单次查询的偏好。允许按次切换的话,
+        # 同一条问题在不同入口会得到不同答案,而"为什么这次召回了废止条款"
+        # 就没人能解释了。
+        if not cfg.include_superseded:
+            query_filter = visible_filter(query_filter)
 
         # --- 1. 一次前向出双向量 ---
         q = self.embedder.encode(query)

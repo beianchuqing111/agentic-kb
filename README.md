@@ -24,8 +24,13 @@
               ▼                         ▼
            Qdrant                 Qdrant + Neo4j
 
+   两条召回都先过一道版本过滤:status != superseded(缺字段当有效)
+   默认只出有效版本 ── INCLUDE_SUPERSEDED=1 ──▶ 历史版本也召回
+
    写工具(默认全关) ──▶ 三道闸 ──▶ export_report / mark_superseded
                         白名单 → 显式确认 → 参数校验 ──▶ logs/audit.jsonl
+                                                        ▲
+                   mark_superseded 改的 status 字段 ──────┘ 就是上面那道过滤读的
 ```
 
 ---
@@ -205,9 +210,54 @@ kb.bat ask "把结论导出成报告.md"      REM 仍然是拒绝:没有确认�
 (不会把回滚点覆盖掉)。导出走 `.part` 临时文件 + 原子 rename,中途失败不留
 半截文件;同名不覆盖,自动加序号。
 
-> ⚠️ 目前 `mark_superseded` 只**写**状态字段,**召回侧还没有按它过滤**
-> (那是版本化索引那一批的事),所以标记过的文档仍会被检索到。工具描述里
-> 也是这么写的 —— 别在描述里承诺做不到的事。
+标记的效果(不再被召回)见下一节。
+
+### 版本化索引:换了版怎么处理
+
+规程换版是这类知识库的日常。做法是「**先把新版导进来,再把旧版标记失效**」,
+不是删旧版 —— 废止的条款以后还要能查。
+
+```bat
+python kb.py ingest .\新版规程\            REM 1. 新版入库(旧版仍在)
+kb.bat ask "把旧版规程标记失效" --allow-write   REM 2. 旧版标记失效
+```
+
+**默认就查不到旧版了**,不需要额外参数。要翻废止条款时:
+
+```bat
+set INCLUDE_SUPERSEDED=1
+kb.bat search "架空线路巡视周期"
+```
+
+字段落在 Qdrant payload 上:
+
+| 字段 | 含义 | 从哪来 |
+|---|---|---|
+| `status` | `current` / `superseded` | 入库时写 `current`,只有 `mark_superseded` 能改 |
+| `doc_version` | 版本号,如 `v2` | 文件名约定 |
+| `effective_from` / `effective_to` | 生效/失效日期 | 文件名约定 |
+
+版本字段是从**文件名**认出来的,认得出的写法是 `规程v2_2025-06-01.md` 这种:
+`vN`(或 `vN.N`)当版本号,ISO 日期当生效日期,两个日期就是区间。认不出**就不写** ——
+错的版本号会被当成真的去比较,比没有更坏。
+
+关于「加字段之前入库的老数据」——这是这块最容易出人命的地方:
+
+- **缺 `status` 的块一律当有效**。代码里(`status_of`)和 Qdrant 过滤条件
+  (`current_filter`)用的是同一套语义,后者写成
+  `status == 'current' OR status 不存在`。
+  只对一处做兼容,结果就是**整个库查不到东西,而且不报错**。
+- 想彻底不带那条 OR 分支,跑一次回填(**只改 payload,不重算向量**):
+
+```bat
+python scripts\backfill_version.py            REM 先看有多少要补
+python scripts\backfill_version.py --apply    REM 真写
+```
+
+> 新增 payload 字段时记得看 `store/qdrant_store.py` 的 `PAYLOAD_INDEXES`:
+> **已存在的 collection 不会重建**,`ensure_collection` 走的是"存在就返回"
+> 那条路。索引没补上的表现是所有查询一起变慢,不报错(所以那里现在会顺手
+> 把索引补齐)。
 
 ### docs / stats / health
 

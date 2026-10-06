@@ -40,6 +40,7 @@ from ingest.loader import Document, discover, load_file, load_many, stable_doc_i
 from llm.client import LLMClient, get_llm
 from store.qdrant_store import Chunk as StoredChunk
 from store.qdrant_store import QdrantStore, get_store
+from store.versioning import VERSION_FIELDS, parse_version_hint
 
 logger = logging.getLogger(__name__)
 
@@ -226,12 +227,35 @@ class IngestPipeline:
     ) -> None:
         for doc in docs:
             try:
+                self._apply_version_hint(doc)
                 self._ingest_one(doc, stats, force=force)
             except Exception as exc:  # noqa: BLE001
                 # 单篇失败不该中断整批 —— 导 500 篇挂在第 200 篇上最气人
                 logger.exception("导入失败: %s", doc.source)
                 stats.errors.append((doc.source, str(exc)))
                 stats.chunks_failed += 1
+
+    @staticmethod
+    def _apply_version_hint(doc: Document) -> None:
+        """把**文件名**里的版本约定并进 `doc.metadata`(`规程v2_2025-06-01.md`)。
+
+        放在导入的入口这一层,而不是 `loader` 里逐个 `_load_*` 写一遍:
+        漏掉一个格式的表现是"PDF 永远没有版本号"—— 不报错,也没人会发现。
+        放这里还能覆盖 `ingest_text` —— 上传上来的东西 source 就是文件名。
+
+        只并集、不覆盖(`setdefault`):loader 已经装了 ext/size/pages,
+        整体替换会把它们抹掉;而且 loader 比文件名更清楚这份文件本身。
+
+        **原地改 `doc.metadata`** 而不是返回新对象:调用方拿着的是同一个
+        `Document`,返回新对象容易两边各改各的。
+        """
+        # 只认**文件名**,不认整条路径:目录名里出现日期很常见
+        # (`\2025-06-01归档\规程.md`),搜整条路径会把归档日期当成生效日期。
+        # 两种分隔符都切,因为这个值可能来自任意平台的路径或裸文件名。
+        name = (doc.source or "").replace("\\", "/").rsplit("/", 1)[-1]
+        hint = parse_version_hint(name)
+        for k, v in hint.items():
+            doc.metadata.setdefault(k, v)
 
     def _ingest_one(self, doc: Document, stats: IngestStats, force: bool = False) -> None:
         prep = prepare_document(doc, self.cfg, self.llm, self.store)
@@ -268,6 +292,13 @@ class IngestPipeline:
             ]
             res = self.embedder.encode(embed_texts, batch_size=self._batch_size(len(group)))
 
+            meta = doc.metadata or {}
+            # 版本字段走 `Chunk` 自己的字段,**从 extra 里剔掉**。
+            # 两条路都留着的话,写的值一模一样、走的分支不一样 —— 等哪天
+            # 有人只改了其中一条(比如给 doc_version 加个默认值),数据就会
+            # 出现"一半 chunk 有版本号、一半没有",而且照样不报错。
+            extra_meta = {k: v for k, v in meta.items() if k not in VERSION_FIELDS}
+
             stored = [
                 StoredChunk(
                     doc_id=doc.doc_id,
@@ -279,10 +310,13 @@ class IngestPipeline:
                     source=doc.source,
                     title=doc.title,
                     content_hash=hashes[g0 + i],
+                    doc_version=meta.get("doc_version") or "",
+                    effective_from=meta.get("effective_from") or "",
+                    effective_to=meta.get("effective_to") or "",
                     extra={
                         "section": ch.section,
                         "doc_hash": doc.content_hash,
-                        **(doc.metadata or {}),
+                        **extra_meta,
                     },
                 )
                 for i, ch in enumerate(group)

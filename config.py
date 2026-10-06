@@ -274,6 +274,14 @@ class RetrievalConfig:
     rerank_min_score: float = field(default_factory=lambda: _env_float("RERANK_MIN_SCORE", 0.05))
     rerank_min_keep: int = field(default_factory=lambda: _env_int("RERANK_MIN_KEEP", 1))
 
+    # 召回时是否带上已被标记失效的历史版本。默认**关**。
+    # 关着 = 只召回有效版本,这是"版本化"对使用者的全部意义;
+    # 打开 = 历史版本仍可召回,用于对比新旧、追溯已被废止的条款。
+    # 需要一个开关而不是直接删掉旧版本,是因为「废止的规程仍然要能查」
+    # 是这类知识库的硬需求 —— 但**默认**必须是查不到的,不然新版本换了
+    # 个说法,旧版本还会挤进 top-k 抢位置。
+    include_superseded: bool = field(default_factory=lambda: _env_bool("INCLUDE_SUPERSEDED", False))
+
 
 @dataclass(frozen=True)
 class GraphRAGConfig:

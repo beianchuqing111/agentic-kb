@@ -52,6 +52,7 @@ from retrieve.hybrid import (
 from retrieve.reranker import get_reranker
 from store.graph_store import INTERNAL_RELS, MENTIONS_REL, get_graph_store
 from store.qdrant_store import get_store
+from store.versioning import is_superseded
 
 logger = logging.getLogger(__name__)
 
@@ -366,8 +367,19 @@ class GraphRAGBackend(BaseBackend):
             for r in records
         }
 
+        # 版本过滤在这边是**事后**做的,不像向量那路能下 Qdrant filter:
+        # 图这一路是 Cypher,吃不了 Qdrant 的过滤器,候选块是查回来之后
+        # 才从 Qdrant 取 payload 的。好在取 payload 这一步本来就有,
+        # 在这里判只多一次内存比较,不用为它多跑一趟查询。
+        #
+        # ⚠️ 判据必须和向量那路**同源**(`include_superseded` + `is_superseded`),
+        # 不能在这边另写一套。两路判得不一样,结果就是"向量召回到的失效块被
+        # 挡了、图召回的没挡",而合并之后完全看不出来是哪一路漏的。
+        drop_superseded = not self.cfg.include_superseded
+
         out: list[tuple[RetrievedChunk, float, list[str]]] = []
         missing = 0
+        skipped = 0
         for r in rows:
             doc_id, idx = r.get("doc_id"), r.get("chunk_index")
             if doc_id is None or idx is None:
@@ -378,14 +390,20 @@ class GraphRAGBackend(BaseBackend):
                 # 记下来,别静默跳过。
                 missing += 1
                 continue
+            payload = rec.payload or {}
+            if drop_superseded and is_superseded(payload):
+                skipped += 1
+                continue
             hits = float(r.get("hits") or 0)
-            out.append((RetrievedChunk.from_payload(rec.payload or {}), hits, list(r.get("ents") or [])))
+            out.append((RetrievedChunk.from_payload(payload), hits, list(r.get("ents") or [])))
 
         if missing:
             logger.warning(
                 "有 %d 个块在图里但 Qdrant 里没有 —— 可能上次导入中断,"
                 "建议对相关文档 force 重导", missing,
             )
+        if skipped:
+            logger.debug("图反查到的候选里有 %d 块已失效,按版本过滤挡掉", skipped)
         return out
 
     # ----------------------------------------------------------------- #

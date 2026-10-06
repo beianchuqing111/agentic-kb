@@ -40,6 +40,7 @@ from config import AgentConfig, EXPORT_DIR, get_settings
 from retrieve.backends import get_backend
 from retrieve.hybrid import RetrievedChunk
 from store.qdrant_store import get_store
+from store.versioning import STATUS_CURRENT, STATUS_SUPERSEDED
 from agent.permissions import (
     READ,
     WRITE,
@@ -420,11 +421,13 @@ def _build_docs_tool(store_override: Any | None = None) -> Tool:
 EXPORT_TOOL = "export_report"
 MARK_TOOL = "mark_superseded"
 
-#: 文档状态。Batch 3 的版本化索引用的是**同一套字段** —— 这里的
-#: `mark_superseded` 就是那条"旧版本标记失效而非删除"能力的写入口,
-#: 别在别处再造一个 `status`。
-STATUS_CURRENT = "current"
-STATUS_SUPERSEDED = "superseded"
+# 文档状态的取值(`STATUS_CURRENT` / `STATUS_SUPERSEDED`)定义在
+# `store/versioning` 并在下面 import 进来。放那边是因为召回侧
+# (`retrieve/hybrid.py`、`backends/graphrag_backend.py`)也要用它下过滤
+# 条件,而 `retrieve/` **不能**反向 import `agent/` —— 依赖方向只有
+# `agent` → `retrieve` 这一条,反过来就是循环导入。这里保留同名再导出,
+# 是为了不破坏已有的调用方和自检脚本;要改取值去 `store/versioning` 改,
+# 别在这边另写一份字面量。
 
 #: 撤销标记时 Action Input 里可以写的词。中英文都收 —— 模型不一定记得住
 #: 工具描述里用的是哪个拼法,而认不出来的后果是它把 "restore" 当成失效
@@ -632,11 +635,10 @@ def _build_mark_tool(store_override: Any | None = None) -> Tool:
         name=MARK_TOOL,
         description=(
             "把一篇文档标记为已失效,或撤销这个标记。用于法条/规程换版:"
-            "**旧版本是标记失效,不是删除**,历史仍然留在库里可查。"
-            # ⚠️ Batch 3 之前**不要**在这里写「标记后不再被召回」:召回侧的
-            # 过滤(status → Qdrant filter)是 Batch 3 的事,现在这个字段
-            # 写进去没人读。工具描述是给模型看的行为契约,写了做不到的事
-            # 就是让模型替你撒谎。Batch 3 接上过滤后再把这句话加回来。
+            "标记之后这篇**不再被检索召回**,但**不是删除** —— 正文原样留在"
+            "库里,显式打开 include_superseded 时仍可查,撤销标记也随时可回退。"
+            "所以有新版规程替代旧版时,该做的是「先把新版导进来、再把旧版标记"
+            "失效」,不要删旧版。"
         ),
         parameter=(
             "`doc_id`,可选再跟一个 `|` 写明原因,如 `abc123 | 2025-06 已废止`;"

@@ -64,6 +64,7 @@ from llm.client import LLMClient, get_llm
 from store.graph_store import Neo4jGraphStore, get_graph_store
 from store.qdrant_store import Chunk as StoredChunk
 from store.qdrant_store import QdrantStore, get_store, point_id
+from store.versioning import VERSION_FIELDS
 
 logger = logging.getLogger(__name__)
 
@@ -414,14 +415,32 @@ class GraphIngestPipeline:
         """块的 metadata —— 会原样变成 Neo4j 上的属性,`doc_id` 是增量重导的关键。
 
         键名注意别撞 `nodes` / `relations`,抽取器会把这两个 pop 掉。
+
+        ⚠️ 这里**故意没有 `status`**。
+        ------------------------------------
+        状态是**可变的**(`mark_superseded` 随时会改),而这份 metadata 只在
+        建图那一刻写一次。把 status 复制到 Neo4j,就多出一份没人负责同步的
+        副本:标记失效之后 Qdrant 那边挡住了、Cypher 这边的老属性还写着
+        `current`。两处对不上,而且**不报错** —— 排查的时候会以为是检索的
+        问题。真值只有一份,在 Qdrant payload 上;图这一路的版本过滤是
+        查回 payload 之后做的,见 `GraphRAGBackend._chunks_mentioning`。
+
+        相反,`doc_version` / 生效日期是**入库即定死**的,建图之后再不会变,
+        复制过来没有同步问题。现在还没有查询读它们,放进来是为了以后加
+        "按生效期筛"时不必重建图 —— 重建图要重跑 LLM 抽实体,那个成本
+        和加三个字段完全不是一个量级。
         """
-        return {
+        meta = {
             "doc_id": doc.doc_id,
             "chunk_index": int(ch.index),
             "source": doc.source,
             "title": doc.title,
             "section": ch.section,
         }
+        for fname, val in (doc.metadata or {}).items():
+            if fname in VERSION_FIELDS and val:
+                meta[fname] = val
+        return meta
 
     def _collect(self, extracted) -> tuple[list, list, list[tuple[str, str]]]:
         """收实体、关系,以及「块 → 实体」的提及对。

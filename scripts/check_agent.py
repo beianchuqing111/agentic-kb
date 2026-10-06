@@ -35,7 +35,10 @@ from embed import get_embedder  # noqa: E402
 from ingest import IngestPipeline, stable_doc_id  # noqa: E402
 from llm.client import ChatResult  # noqa: E402
 from retrieve.backends import HybridBackend, set_backend  # noqa: E402
-from retrieve.hybrid import RetrievedChunk  # noqa: E402
+from retrieve.hybrid import HybridRetriever, RetrievedChunk  # noqa: E402
+from store.versioning import STATUS_FIELD  # noqa: E402
+from qdrant_client import models as qm  # noqa: E402
+
 from store import QdrantStore  # noqa: E402
 from agent.react import (  # noqa: E402
     STOP_SEQUENCES,
@@ -96,6 +99,25 @@ WRITE_DOC_TEXT = (
     "各等级占比、按期消缺率、超期未消缺数量以及重复性缺陷情况。"
     "重复性缺陷应当开展专项分析,查明根因,不得简单以消缺了事。"
     "第六条 本细则由运维分部负责解释,自发布之日起施行。"
+)
+
+# 同一部规程的两版,用来验版本化召回。**两版对同一个问题都能答**是刻意的:
+# 旧版要是本来就不相关,"标记失效后不再被召回"什么都证明不了 —— 它本来
+# 也不会出现。两版内容只在数字上有区别,和真实换版的情形一致。
+# source 里带 `v1_2024-01-01` 这种写法,是为了顺带验"文件名约定 → 版本字段"
+# 这条链路真的通了。
+VER_DOC_V1 = "selftest_agent://架空线路巡视规程v1_2024-01-01"
+VER_DOC_V2 = "selftest_agent://架空线路巡视规程v2_2025-06-01"
+VER_QUERY = "架空线路的巡视周期是多久"
+VER_TEXT_V1 = (
+    "架空线路巡视周期规定:城区线路每十五天至少巡视一次,郊区及农村线路每三十天至少一次。"
+    "红外测温每季度开展一次,重点测量导线接头、耐张线夹和并沟线夹的温度。"
+    "巡视发现的缺陷按缺陷定级流程处理,通道内的树障应当在发现后三十天内清理完毕。"
+)
+VER_TEXT_V2 = (
+    "架空线路巡视周期规定:城区线路每七天至少巡视一次,郊区及农村线路每十五天至少一次。"
+    "红外测温每月开展一次,重点测量导线接头、耐张线夹和并沟线夹的温度。"
+    "巡视发现的缺陷按缺陷定级流程处理,通道内的树障应当在发现后十五天内清理完毕。"
 )
 
 
@@ -418,6 +440,10 @@ def check_tools(failures: list[str]) -> tuple[QdrantStore, QdrantStore] | None:
     # 它在最后把标记撤销还原,所以不影响后面 ReAct 那一段。
     check_write_tools(failures, store)
 
+    # 版本化召回接在写工具后面:它要用 `mark_superseded` 把一篇真文档标成
+    # 失效,再回头验证检索结果 —— 用到的是同一条 `status` 链路的两端。
+    check_versioning(failures, store)
+
     # 两个 collection 都要交回给 main 去删(空的那个也要)
     return store, empty_store
 
@@ -706,6 +732,112 @@ def check_write_tools(failures: list[str], store: QdrantStore) -> None:
     print(f"    {'✅' if ok else '❌'} 不存在的 doc_id -> 指向 list_documents")
     if not ok:
         failures.append(f"未知 doc_id 的提示不合格: {obs[:120]!r}")
+
+    tmp.cleanup()
+
+
+# --------------------------------------------------------------------- #
+# 3.5 版本化索引
+# --------------------------------------------------------------------- #
+
+
+def check_versioning(failures: list[str], store: QdrantStore) -> None:
+    """标记失效 → 召回侧真的不再返回它 → 开关打开又能召回。
+
+    这条是 Batch 3 的**验收条件**,不是"字段写进去了"的检查。字段写进去
+    没人读是这轮改动之前的状态,而那种状态下所有断言都能绿 ——
+    所以这里一律从**检索结果**看,不看 payload。
+    """
+    print("\n[3.5] 版本化索引(标记失效 → 召回侧过滤)")
+
+    s = get_settings()
+    pipe = IngestPipeline(store=store)
+    pipe.ingest_text(VER_TEXT_V1, source=VER_DOC_V1, title="架空线路巡视规程")
+    pipe.ingest_text(VER_TEXT_V2, source=VER_DOC_V2, title="架空线路巡视规程")
+
+    v1 = stable_doc_id(VER_DOC_V1)
+    v2 = stable_doc_id(VER_DOC_V2)
+
+    base = dataclasses.replace(s.retrieval, include_superseded=False, rerank_enabled=False)
+    with_hist = dataclasses.replace(base, include_superseded=True)
+    # 直接建两个检索器,而不是改全局配置:全局那份是 `frozen` 的单例,
+    # 动它会把同一进程里后面所有用例一起带偏 —— 自检自己制造的这种
+    # 串扰最难查。
+    r_cur = HybridRetriever(store=store, cfg=base)
+    r_hist = HybridRetriever(store=store, cfg=with_hist)
+
+    def hits(r: HybridRetriever) -> set[str]:
+        return {c.doc_id for c in r.retrieve(VER_QUERY, top_k=10)}
+
+    # --- 前置:两版都召得回 ---
+    # 没有这一步,后面"旧版不在了"完全可能是"它本来就没被召回"。
+    got = hits(r_cur)
+    ok = v1 in got and v2 in got
+    print(f"    {'✅' if ok else '❌'} 基线:两版都能召回(共 {len(got)} 块)")
+    if not ok:
+        failures.append(f"基线不成立,后面的过滤结论没意义: v1={v1 in got} v2={v2 in got}")
+        return
+
+    # --- 文件名约定 → 版本字段 ---
+    recs = store.doc_records(v1)
+    p = (recs[0].payload or {}) if recs else {}
+    ok = p.get("doc_version") == "v1" and p.get("effective_from") == "2024-01-01"
+    print(f"    {'✅' if ok else '❌'} 文件名认出版本: v1={p.get('doc_version')} 生效={p.get('effective_from')}")
+    if not ok:
+        failures.append(f"文件名里的版本约定没进 payload: {p.get('doc_version')!r} {p.get('effective_from')!r}")
+
+    # --- 标记失效(走真工具,不走 set_payload)---
+    tmp = tempfile.TemporaryDirectory(prefix="kb_selftest_ver_")
+    audit_path = Path(tmp.name) / "audit.jsonl"
+    cfg = dataclasses.replace(s.agent, audit_log=str(audit_path))
+    reg = build_registry(
+        cfg, allow_write=True, confirmer=lambda *a: True,
+        exports_dir=Path(tmp.name) / "exports", store_override=store,
+    )
+    obs = reg.run(MARK_TOOL, f"{v1} | 2025-06 换版")
+    if "已把" not in obs:
+        failures.append(f"标记失效没成功,后面几条都验不了: {obs[:120]!r}")
+        print(f"    ❌ 标记失效失败: {obs[:100]!r}")
+        tmp.cleanup()
+        return
+
+    # --- 核心:旧版不再召回,新版还在 ---
+    got = hits(r_cur)
+    ok = v1 not in got and v2 in got
+    print(f"    {'✅' if ok else '❌'} 标记后:旧版不再召回、新版仍在(旧版在={v1 in got})")
+    if not ok:
+        failures.append(f"过滤没生效: 召回结果 {sorted(got)}")
+
+    # --- 开关打开:历史版本可召回 ---
+    got = hits(r_hist)
+    ok = v1 in got
+    print(f"    {'✅' if ok else '❌'} 打开 include_superseded:历史版本可召回")
+    if not ok:
+        failures.append("开关打开了旧版还是召回不到 —— 那不是过滤,是数据没了")
+
+    # --- 老数据兼容:没有 status 字段的块**必须**照样召回 ---
+    # 这是"缺字段当有效"那条约定的唯一验证点。它要是错了,表现是升级之后
+    # 整个库查不到东西 —— 而且不报错。
+    store.client.delete_payload(
+        collection_name=store.cfg.collection,
+        keys=[STATUS_FIELD],
+        points=qm.PointIdsList(points=[r.id for r in store.doc_records(v2)]),
+        wait=True,
+    )
+    left = (store.doc_records(v2)[0].payload or {})
+    got = hits(r_cur)
+    ok = STATUS_FIELD not in left and v2 in got
+    print(f"    {'✅' if ok else '❌'} 老数据(无 status 字段)仍能召回")
+    if not ok:
+        failures.append(f"缺字段的老数据被挡掉了: 字段在={STATUS_FIELD in left} 召回={v2 in got}")
+
+    # --- 撤销后回到可召回 ---
+    reg.run(MARK_TOOL, f"{v1} | restore")
+    got = hits(r_cur)
+    ok = v1 in got
+    print(f"    {'✅' if ok else '❌'} 撤销标记后旧版回到召回结果")
+    if not ok:
+        failures.append("撤销标记后旧版仍然召回不到")
 
     tmp.cleanup()
 

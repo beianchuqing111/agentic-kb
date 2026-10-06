@@ -41,6 +41,7 @@ from qdrant_client import models as qm
 
 from config import QdrantConfig, RetrievalConfig, get_settings
 from embed.sparse_convert import to_sparse_vector
+from store.versioning import STATUS_CURRENT, STATUS_FIELD
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +51,19 @@ _POINT_NAMESPACE = uuid.UUID("a3f1c2d4-5b6e-4f7a-8c9d-0e1f2a3b4c5d")
 
 # 一批 upsert 多少条。太大单次请求体过大,太小来回开销高。
 UPSERT_BATCH = 256
+
+# payload 索引。放在模块级是为了让「建 collection」和「给已有 collection
+# 补索引」走的是**同一份清单** —— 写成两份,加字段时必然只改一处。
+PAYLOAD_INDEXES: tuple[tuple[str, "qm.PayloadSchemaType"], ...] = (
+    ("doc_id", qm.PayloadSchemaType.KEYWORD),
+    ("content_hash", qm.PayloadSchemaType.KEYWORD),
+    ("source", qm.PayloadSchemaType.KEYWORD),
+    ("chunk_index", qm.PayloadSchemaType.INTEGER),
+    # status:每一次召回都会带上它(见 store/versioning.py),是这条查询
+    # 路径上唯一的过滤字段。不建索引的话它退化成逐点全扫 ——
+    # 加了过滤反而比不加慢,而且不报错。
+    (STATUS_FIELD, qm.PayloadSchemaType.KEYWORD),
+)
 
 
 def point_id(doc_id: str, chunk_index: int) -> str:
@@ -78,6 +92,14 @@ class Chunk:
     source: str = ""                           # 文件路径 / URL
     title: str = ""
     content_hash: str = ""                     # 原文指纹,用于增量去重
+    # 版本化字段。见 `store/versioning.py` —— 状态取值和缺省语义在那边定义,
+    # 这里只是把它落到 payload 上,不要在这一层另写一套判断。
+    # `status` 默认就给 `current`:新入库的东西一律有效,而且**显式写出来**,
+    # 不靠"缺字段当有效"那条兼容路径 —— 那条是给加字段之前的老数据用的。
+    status: str = STATUS_CURRENT
+    doc_version: str = ""
+    effective_from: str = ""
+    effective_to: str = ""
     extra: dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -107,9 +129,31 @@ class Chunk:
             "content_hash": self.content_hash,
             "char_count": len(self.text),
             "ingested_at": _now_iso(),
+            # status **一定写**,哪怕是默认值:缺字段在 Qdrant 里是"匹配不上
+            # 等值条件"的,召回侧要靠一个额外的 OR 分支才兜得住。新数据不留
+            # 这个坑,那个 OR 就只需要服务于老数据。
+            "status": self.status,
         }
+        # 其余版本字段是**可选**的,认不出就不写 —— 写空字符串会让"有版本号
+        # 但为空"和"没有版本号"变成两种状态,而它们没有任何行为差异。
+        for fname, val in (
+            ("doc_version", self.doc_version),
+            ("effective_from", self.effective_from),
+            ("effective_to", self.effective_to),
+        ):
+            if val:
+                payload[fname] = val
         # extra 只放标量 —— 嵌套结构没法建 payload 索引,过滤会退化成全扫
         for k, v in self.extra.items():
+            if k == STATUS_FIELD and v != self.status:
+                # `extra` 是从文档 metadata 直接铺开的,内容不受这一层控制。
+                # 放它覆盖 status,等于让一篇文档的 metadata 把整篇从召回里
+                # 抹掉 —— 而且是那种不报错、只是"查不到"的抹法。取值恰好
+                # 相同就放行,那种情况下本来也没有差别。
+                raise ValueError(
+                    f"extra 里的 {STATUS_FIELD}={v!r} 与 Chunk.status={self.status!r} "
+                    "冲突。状态只能由 mark_superseded 改,不能从 metadata 塞进来。"
+                )
             if isinstance(v, (str, int, float, bool)) or v is None:
                 payload[k] = v
         return qm.PointStruct(
@@ -170,6 +214,12 @@ class QdrantStore:
         if self.exists():
             if not recreate:
                 self._check_dim(dense_dim)
+                # ⚠️ 这个分支里**也必须**补索引。
+                # 加字段时最容易漏的就是这里:老库早就存在,`ensure_collection`
+                # 一看存在就返回,新加的索引永远建不上 —— 而过滤照样能跑,
+                # 只是退化成逐点全扫。没有报错、没有日志,只是所有查询
+                # 一起变慢,没人会往"少建了个索引"上想。
+                self.ensure_payload_indexes()
                 return
             logger.warning("recreate=True,正在删除已有 collection: %s", self.cfg.collection)
             self.client.delete_collection(self.cfg.collection)
@@ -194,23 +244,27 @@ class QdrantStore:
             },
         )
 
-        # payload 索引:没有它,按 doc_id 删除/按 hash 去重会退化成全表扫
-        for fname, schema in (
-            ("doc_id", qm.PayloadSchemaType.KEYWORD),
-            ("content_hash", qm.PayloadSchemaType.KEYWORD),
-            ("source", qm.PayloadSchemaType.KEYWORD),
-            ("chunk_index", qm.PayloadSchemaType.INTEGER),
-        ):
-            self.client.create_payload_index(
-                collection_name=self.cfg.collection,
-                field_name=fname,
-                field_schema=schema,
-            )
+        self.ensure_payload_indexes()
 
         logger.info(
             "已建 collection %s (dense=%s/%d, sparse=%s)",
             self.cfg.collection, self.cfg.dense_field, dense_dim, self.cfg.sparse_field,
         )
+
+    def ensure_payload_indexes(self) -> None:
+        """把 payload 索引补齐。**幂等**,已存在就什么都不做。
+
+        抽成公开方法是为了让"已存在的 collection"也能补上新加的索引 ——
+        见上面 `ensure_collection` 里那段。Qdrant 的 `create_payload_index`
+        对已存在的索引是幂等的(重复建不报错),所以直接建、不用先查。
+        """
+        # 没有索引,按 doc_id 删除/按 hash 去重会退化成全表扫
+        for fname, schema in PAYLOAD_INDEXES:
+            self.client.create_payload_index(
+                collection_name=self.cfg.collection,
+                field_name=fname,
+                field_schema=schema,
+            )
 
     def _check_dim(self, dense_dim: int) -> None:
         """已经存在的 collection 维度对不上时**报错而不是覆盖** ——
