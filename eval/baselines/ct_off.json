@@ -1,0 +1,1466 @@
+{
+  "schema_version": 1,
+  "created_at": "2026-10-06T17:42:37",
+  "corpus": {
+    "root": "D:\\agentic-kb\\eval\\corpus\\seed",
+    "slug": "seed",
+    "n_docs": 9,
+    "n_chunks": 61
+  },
+  "qa": {
+    "path": "D:\\agentic-kb\\eval\\qa\\seed.jsonl",
+    "sha1": "cff7b1451a4dd5b3",
+    "n_kept": 20,
+    "n_answerable": 15,
+    "n_negative": 5,
+    "include_drafts": false
+  },
+  "ingest": {
+    "chunk_size": 512,
+    "chunk_overlap": 64,
+    "contextual_enabled": false,
+    "embed_model": "BAAI/bge-m3",
+    "rerank_model": "BAAI/bge-reranker-v2-m3"
+  },
+  "collection": "agentic_kb_eval_seed_noctx_b364d64b",
+  "ks": [
+    1,
+    3,
+    5,
+    10
+  ],
+  "runs": {
+    "no-threshold+wide": {
+      "spec": "no-threshold+wide",
+      "use_rerank": true,
+      "retrieval": {
+        "dense_top_k": 50,
+        "sparse_top_k": 50,
+        "fusion_top_k": 50,
+        "rrf_k": 60,
+        "rerank_enabled": true,
+        "rerank_model": "BAAI/bge-reranker-v2-m3",
+        "rerank_top_n": 5,
+        "rerank_max_length": 1024,
+        "rerank_min_score": 0.0,
+        "rerank_min_keep": 0
+      },
+      "effective_k": 10,
+      "n_answerable": 15,
+      "n_negative": 5,
+      "nonempty_rate": {
+        "1": 1.0,
+        "3": 1.0,
+        "5": 1.0,
+        "10": 1.0
+      },
+      "tie_ambiguous": [],
+      "aggregates": {
+        "1": {
+          "n": 15,
+          "hit": 1.0,
+          "rr": 1.0,
+          "ndcg": 0.9619047619047619,
+          "ndcg_binary": 1.0,
+          "precision": 1.0,
+          "recall": 0.8111111111111112
+        },
+        "3": {
+          "n": 15,
+          "hit": 1.0,
+          "rr": 1.0,
+          "ndcg": 0.9526159495974296,
+          "ndcg_binary": 0.9429245644495133,
+          "precision": 0.4222222222222222,
+          "recall": 0.9222222222222222
+        },
+        "5": {
+          "n": 15,
+          "hit": 1.0,
+          "rr": 1.0,
+          "ndcg": 0.9705391515989106,
+          "ndcg_binary": 0.9726318921235095,
+          "precision": 0.28,
+          "recall": 0.9777777777777777
+        },
+        "10": {
+          "n": 15,
+          "hit": 1.0,
+          "rr": 1.0,
+          "ndcg": 0.9773940425848082,
+          "ndcg_binary": 0.9837759224545898,
+          "precision": 0.14666666666666667,
+          "recall": 1.0
+        }
+      },
+      "by_type": {
+        "1": {
+          "lexical": {
+            "n": 4,
+            "hit": 1.0,
+            "rr": 1.0,
+            "ndcg": 1.0,
+            "ndcg_binary": 1.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "semantic": {
+            "n": 4,
+            "hit": 1.0,
+            "rr": 1.0,
+            "ndcg": 1.0,
+            "ndcg_binary": 1.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "multi_hop": {
+            "n": 3,
+            "hit": 1.0,
+            "rr": 1.0,
+            "ndcg": 0.8095238095238096,
+            "ndcg_binary": 1.0,
+            "precision": 1.0,
+            "recall": 0.4444444444444444
+          },
+          "contextual": {
+            "n": 2,
+            "hit": 1.0,
+            "rr": 1.0,
+            "ndcg": 1.0,
+            "ndcg_binary": 1.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "ambiguous": {
+            "n": 2,
+            "hit": 1.0,
+            "rr": 1.0,
+            "ndcg": 1.0,
+            "ndcg_binary": 1.0,
+            "precision": 1.0,
+            "recall": 0.41666666666666663
+          }
+        },
+        "3": {
+          "lexical": {
+            "n": 4,
+            "hit": 1.0,
+            "rr": 1.0,
+            "ndcg": 1.0,
+            "ndcg_binary": 1.0,
+            "precision": 0.3333333333333333,
+            "recall": 1.0
+          },
+          "semantic": {
+            "n": 4,
+            "hit": 1.0,
+            "rr": 1.0,
+            "ndcg": 1.0,
+            "ndcg_binary": 1.0,
+            "precision": 0.3333333333333333,
+            "recall": 1.0
+          },
+          "multi_hop": {
+            "n": 3,
+            "hit": 1.0,
+            "rr": 1.0,
+            "ndcg": 0.8111900278607175,
+            "ndcg_binary": 0.79283594325136,
+            "precision": 0.5555555555555555,
+            "recall": 0.7222222222222222
+          },
+          "contextual": {
+            "n": 2,
+            "hit": 1.0,
+            "rr": 1.0,
+            "ndcg": 1.0,
+            "ndcg_binary": 1.0,
+            "precision": 0.3333333333333333,
+            "recall": 1.0
+          },
+          "ambiguous": {
+            "n": 2,
+            "hit": 1.0,
+            "rr": 1.0,
+            "ndcg": 0.9278345801896452,
+            "ndcg_binary": 0.8826803184943108,
+            "precision": 0.6666666666666666,
+            "recall": 0.8333333333333333
+          }
+        },
+        "5": {
+          "lexical": {
+            "n": 4,
+            "hit": 1.0,
+            "rr": 1.0,
+            "ndcg": 1.0,
+            "ndcg_binary": 1.0,
+            "precision": 0.2,
+            "recall": 1.0
+          },
+          "semantic": {
+            "n": 4,
+            "hit": 1.0,
+            "rr": 1.0,
+            "ndcg": 1.0,
+            "ndcg_binary": 1.0,
+            "precision": 0.2,
+            "recall": 1.0
+          },
+          "multi_hop": {
+            "n": 3,
+            "hit": 1.0,
+            "rr": 1.0,
+            "ndcg": 0.9008060378681232,
+            "ndcg_binary": 0.9413725816213413,
+            "precision": 0.4666666666666666,
+            "recall": 1.0
+          },
+          "contextual": {
+            "n": 2,
+            "hit": 1.0,
+            "rr": 1.0,
+            "ndcg": 1.0,
+            "ndcg_binary": 1.0,
+            "precision": 0.2,
+            "recall": 1.0
+          },
+          "ambiguous": {
+            "n": 2,
+            "hit": 1.0,
+            "rr": 1.0,
+            "ndcg": 0.9278345801896452,
+            "ndcg_binary": 0.8826803184943108,
+            "precision": 0.4,
+            "recall": 0.8333333333333333
+          }
+        },
+        "10": {
+          "lexical": {
+            "n": 4,
+            "hit": 1.0,
+            "rr": 1.0,
+            "ndcg": 1.0,
+            "ndcg_binary": 1.0,
+            "precision": 0.1,
+            "recall": 1.0
+          },
+          "semantic": {
+            "n": 4,
+            "hit": 1.0,
+            "rr": 1.0,
+            "ndcg": 1.0,
+            "ndcg_binary": 1.0,
+            "precision": 0.1,
+            "recall": 1.0
+          },
+          "multi_hop": {
+            "n": 3,
+            "hit": 1.0,
+            "rr": 1.0,
+            "ndcg": 0.9008060378681232,
+            "ndcg_binary": 0.9413725816213413,
+            "precision": 0.2333333333333333,
+            "recall": 1.0
+          },
+          "contextual": {
+            "n": 2,
+            "hit": 1.0,
+            "rr": 1.0,
+            "ndcg": 1.0,
+            "ndcg_binary": 1.0,
+            "precision": 0.1,
+            "recall": 1.0
+          },
+          "ambiguous": {
+            "n": 2,
+            "hit": 1.0,
+            "rr": 1.0,
+            "ndcg": 0.9792462625838773,
+            "ndcg_binary": 0.966260545977412,
+            "precision": 0.25,
+            "recall": 1.0
+          }
+        }
+      },
+      "negatives": {
+        "1": {
+          "n": 5,
+          "leak": 1.0,
+          "above_threshold_rate": 1.0,
+          "top1_is_foreign_gold": 0.6,
+          "mean_returned": 10.0,
+          "top1_score_mean": 0.08293542910328866,
+          "top1_score_p90": 0.20091470957064056,
+          "_threshold": 0.0
+        },
+        "3": {
+          "n": 5,
+          "leak": 1.0,
+          "above_threshold_rate": 1.0,
+          "top1_is_foreign_gold": 0.6,
+          "mean_returned": 10.0,
+          "top1_score_mean": 0.08293542910328866,
+          "top1_score_p90": 0.20091470957064056,
+          "_threshold": 0.0
+        },
+        "5": {
+          "n": 5,
+          "leak": 1.0,
+          "above_threshold_rate": 1.0,
+          "top1_is_foreign_gold": 0.6,
+          "mean_returned": 10.0,
+          "top1_score_mean": 0.08293542910328866,
+          "top1_score_p90": 0.20091470957064056,
+          "_threshold": 0.0
+        },
+        "10": {
+          "n": 5,
+          "leak": 1.0,
+          "above_threshold_rate": 1.0,
+          "top1_is_foreign_gold": 0.6,
+          "mean_returned": 10.0,
+          "top1_score_mean": 0.08293542910328866,
+          "top1_score_p90": 0.20091470957064056,
+          "_threshold": 0.0
+        }
+      },
+      "per_item": [
+        {
+          "item_id": "seed-001",
+          "type": "lexical",
+          "question": "110kV 架空输电线路的日常巡视一般多久一次?",
+          "rank": 1,
+          "n_returned": 10,
+          "n_gold": 1,
+          "rank_lo": 1,
+          "rank_hi": 1,
+          "dropped": 0,
+          "golds": [
+            [
+              "01_架空输电线路巡视作业指导书.md#1",
+              1
+            ]
+          ],
+          "top1": "01_架空输电线路巡视作业指导书.md#1",
+          "top1_score": 0.9989717891128628,
+          "doc_source": {
+            "01_架空输电线路巡视作业指导书.md#1": "both"
+          }
+        },
+        {
+          "item_id": "seed-002",
+          "type": "lexical",
+          "question": "主变正常运行时上层油温不应超过多少摄氏度?",
+          "rank": 1,
+          "n_returned": 10,
+          "n_gold": 1,
+          "rank_lo": 1,
+          "rank_hi": 1,
+          "dropped": 0,
+          "golds": [
+            [
+              "02_主变压器运行规程.md#1",
+              1
+            ]
+          ],
+          "top1": "02_主变压器运行规程.md#1",
+          "top1_score": 0.9982038508450997,
+          "doc_source": {
+            "02_主变压器运行规程.md#1": "both"
+          }
+        },
+        {
+          "item_id": "seed-003",
+          "type": "lexical",
+          "question": "值班人员每几小时抄录一次主变油温?",
+          "rank": 1,
+          "n_returned": 10,
+          "n_gold": 1,
+          "rank_lo": 1,
+          "rank_hi": 1,
+          "dropped": 0,
+          "golds": [
+            [
+              "03_变电站值班与交接班制度.md#2",
+              1
+            ]
+          ],
+          "top1": "03_变电站值班与交接班制度.md#2",
+          "top1_score": 0.9990637171822441,
+          "doc_source": {
+            "03_变电站值班与交接班制度.md#2": "both"
+          }
+        },
+        {
+          "item_id": "seed-004",
+          "type": "semantic",
+          "question": "变压器内部如果发生过热或者放电性故障,用哪种试验手段最能查出来?",
+          "rank": 1,
+          "n_returned": 10,
+          "n_gold": 1,
+          "rank_lo": 1,
+          "rank_hi": 1,
+          "dropped": 0,
+          "golds": [
+            [
+              "02_主变压器运行规程.md#2",
+              1
+            ]
+          ],
+          "top1": "02_主变压器运行规程.md#2",
+          "top1_score": 0.9902538959474461,
+          "doc_source": {
+            "02_主变压器运行规程.md#2": "both"
+          }
+        },
+        {
+          "item_id": "seed-005",
+          "type": "semantic",
+          "question": "怎么判断复合绝缘子内部已经受潮或者存在导通性缺陷?",
+          "rank": 1,
+          "n_returned": 10,
+          "n_gold": 1,
+          "rank_lo": 1,
+          "rank_hi": 1,
+          "dropped": 0,
+          "golds": [
+            [
+              "04_绝缘子检测作业指导书.md#3",
+              1
+            ]
+          ],
+          "top1": "04_绝缘子检测作业指导书.md#3",
+          "top1_score": 0.9863105223037255,
+          "doc_source": {
+            "04_绝缘子检测作业指导书.md#3": "both"
+          }
+        },
+        {
+          "item_id": "seed-006",
+          "type": "semantic",
+          "question": "线路通道里哪几类车辆的臂架碰到导线会造成人身伤亡?",
+          "rank": 1,
+          "n_returned": 10,
+          "n_gold": 1,
+          "rank_lo": 1,
+          "rank_hi": 1,
+          "dropped": 0,
+          "golds": [
+            [
+              "01_架空输电线路巡视作业指导书.md#3",
+              1
+            ]
+          ],
+          "top1": "01_架空输电线路巡视作业指导书.md#3",
+          "top1_score": 0.9813106915732508,
+          "doc_source": {
+            "01_架空输电线路巡视作业指导书.md#3": "both"
+          }
+        },
+        {
+          "item_id": "seed-007",
+          "type": "semantic",
+          "question": "归档工作做得不好,最直接的后果是什么?",
+          "rank": 1,
+          "n_returned": 10,
+          "n_gold": 1,
+          "rank_lo": 1,
+          "rank_hi": 1,
+          "dropped": 0,
+          "golds": [
+            [
+              "08_设备台账与运行资料归档管理.md#5",
+              1
+            ]
+          ],
+          "top1": "08_设备台账与运行资料归档管理.md#5",
+          "top1_score": 0.9901782070803069,
+          "doc_source": {
+            "08_设备台账与运行资料归档管理.md#5": "both"
+          }
+        },
+        {
+          "item_id": "seed-008",
+          "type": "lexical",
+          "question": "红外测温时,氧化后的铝表面发射率应该取多少?",
+          "rank": 1,
+          "n_returned": 10,
+          "n_gold": 1,
+          "rank_lo": 1,
+          "rank_hi": 1,
+          "dropped": 0,
+          "golds": [
+            [
+              "07_红外测温作业指导书.md#2",
+              1
+            ]
+          ],
+          "top1": "07_红外测温作业指导书.md#2",
+          "top1_score": 0.9867261125456144,
+          "doc_source": {
+            "07_红外测温作业指导书.md#2": "both"
+          }
+        },
+        {
+          "item_id": "seed-009",
+          "type": "multi_hop",
+          "question": "迎峰度夏期间主变油温到多少要加强监视,那时的记录频次又是多少?",
+          "rank": 1,
+          "n_returned": 10,
+          "n_gold": 3,
+          "rank_lo": 1,
+          "rank_hi": 1,
+          "dropped": 0,
+          "golds": [
+            [
+              "09_迎峰度夏专项运行措施.md#2",
+              1
+            ],
+            [
+              "03_变电站值班与交接班制度.md#2",
+              5
+            ],
+            [
+              "02_主变压器运行规程.md#1",
+              2
+            ]
+          ],
+          "top1": "09_迎峰度夏专项运行措施.md#2",
+          "top1_score": 0.9966884809397303,
+          "doc_source": {
+            "09_迎峰度夏专项运行措施.md#2": "both",
+            "03_变电站值班与交接班制度.md#2": "both",
+            "02_主变压器运行规程.md#1": "both"
+          }
+        },
+        {
+          "item_id": "seed-010",
+          "type": "multi_hop",
+          "question": "检测发现零值绝缘子应该怎么处理?",
+          "rank": 1,
+          "n_returned": 10,
+          "n_gold": 2,
+          "rank_lo": 1,
+          "rank_hi": 1,
+          "dropped": 0,
+          "golds": [
+            [
+              "04_绝缘子检测作业指导书.md#2",
+              2
+            ],
+            [
+              "04_绝缘子检测作业指导书.md#5",
+              1
+            ]
+          ],
+          "top1": "04_绝缘子检测作业指导书.md#5",
+          "top1_score": 0.9957187454592983,
+          "doc_source": {
+            "04_绝缘子检测作业指导书.md#2": "both",
+            "04_绝缘子检测作业指导书.md#5": "both"
+          }
+        },
+        {
+          "item_id": "seed-011",
+          "type": "multi_hop",
+          "question": "严重缺陷和危急缺陷分别要在多久内消除?",
+          "rank": 1,
+          "n_returned": 10,
+          "n_gold": 2,
+          "rank_lo": 1,
+          "rank_hi": 1,
+          "dropped": 0,
+          "golds": [
+            [
+              "06_缺陷定级与消缺管理细则.md#3",
+              1
+            ],
+            [
+              "06_缺陷定级与消缺管理细则.md#2",
+              4
+            ]
+          ],
+          "top1": "06_缺陷定级与消缺管理细则.md#3",
+          "top1_score": 0.9706877692486436,
+          "doc_source": {
+            "06_缺陷定级与消缺管理细则.md#3": "both",
+            "06_缺陷定级与消缺管理细则.md#2": "both"
+          }
+        },
+        {
+          "item_id": "seed-012",
+          "type": "contextual",
+          "question": "该系统对历史数据有什么依赖?",
+          "rank": 1,
+          "n_returned": 10,
+          "n_gold": 1,
+          "rank_lo": 1,
+          "rank_hi": 1,
+          "dropped": 0,
+          "golds": [
+            [
+              "07_红外测温作业指导书.md#4",
+              1
+            ]
+          ],
+          "top1": "07_红外测温作业指导书.md#4",
+          "top1_score": 0.9650533028884729,
+          "doc_source": {
+            "07_红外测温作业指导书.md#4": "both"
+          }
+        },
+        {
+          "item_id": "seed-013",
+          "type": "contextual",
+          "question": "上述判据在什么情况下应当改用绝对温升?",
+          "rank": 1,
+          "n_returned": 10,
+          "n_gold": 1,
+          "rank_lo": 1,
+          "rank_hi": 1,
+          "dropped": 0,
+          "golds": [
+            [
+              "07_红外测温作业指导书.md#4",
+              1
+            ]
+          ],
+          "top1": "07_红外测温作业指导书.md#4",
+          "top1_score": 0.9564718602835648,
+          "doc_source": {
+            "07_红外测温作业指导书.md#4": "both"
+          }
+        },
+        {
+          "item_id": "seed-014",
+          "type": "ambiguous",
+          "question": "运行资料一般要保存多久?",
+          "rank": 1,
+          "n_returned": 10,
+          "n_gold": 3,
+          "rank_lo": 1,
+          "rank_hi": 1,
+          "dropped": 0,
+          "golds": [
+            [
+              "08_设备台账与运行资料归档管理.md#3",
+              1
+            ],
+            [
+              "03_变电站值班与交接班制度.md#5",
+              6
+            ],
+            [
+              "06_缺陷定级与消缺管理细则.md#5",
+              2
+            ]
+          ],
+          "top1": "08_设备台账与运行资料归档管理.md#3",
+          "top1_score": 0.8140528050985784,
+          "doc_source": {
+            "08_设备台账与运行资料归档管理.md#3": "both",
+            "03_变电站值班与交接班制度.md#5": "both",
+            "06_缺陷定级与消缺管理细则.md#5": "both"
+          }
+        },
+        {
+          "item_id": "seed-015",
+          "type": "ambiguous",
+          "question": "导线断股达到什么程度就必须处理?",
+          "rank": 1,
+          "n_returned": 10,
+          "n_gold": 2,
+          "rank_lo": 1,
+          "rank_hi": 1,
+          "dropped": 0,
+          "golds": [
+            [
+              "05_金具与导地线检查作业指导书.md#2",
+              1
+            ],
+            [
+              "06_缺陷定级与消缺管理细则.md#2",
+              2
+            ]
+          ],
+          "top1": "05_金具与导地线检查作业指导书.md#2",
+          "top1_score": 0.9711838031967466,
+          "doc_source": {
+            "05_金具与导地线检查作业指导书.md#2": "both",
+            "06_缺陷定级与消缺管理细则.md#2": "both"
+          }
+        }
+      ],
+      "negative_items": [
+        {
+          "item_id": "seed-031",
+          "question": "220kV 断路器的额定开断电流是多少千安?",
+          "top1": "01_架空输电线路巡视作业指导书.md#3",
+          "top1_score": 0.013020490113842827,
+          "leak": 1.0,
+          "n_returned": 10,
+          "foreign_gold": 1.0,
+          "threshold": 0.0
+        },
+        {
+          "item_id": "seed-032",
+          "question": "GIS 组合电器 SF6 气室的微水含量限值是多少?",
+          "top1": "02_主变压器运行规程.md#2",
+          "top1_score": 0.0049629421018728415,
+          "leak": 1.0,
+          "n_returned": 10,
+          "foreign_gold": 1.0,
+          "threshold": 0.0
+        },
+        {
+          "item_id": "seed-033",
+          "question": "变电站蓄电池组的均充电压和浮充电压各是多少?",
+          "top1": "48cd60d3#1",
+          "top1_score": 0.002992665245354638,
+          "leak": 1.0,
+          "n_returned": 10,
+          "foreign_gold": 0.0,
+          "threshold": 0.0
+        },
+        {
+          "item_id": "seed-034",
+          "question": "架空线路杆塔的工频接地电阻限值是多少欧姆?",
+          "top1": "01_架空输电线路巡视作业指导书.md#1",
+          "top1_score": 0.2171714517424569,
+          "leak": 1.0,
+          "n_returned": 10,
+          "foreign_gold": 1.0,
+          "threshold": 0.0
+        },
+        {
+          "item_id": "seed-035",
+          "question": "变压器的绕组直流电阻试验周期是多久?",
+          "top1": "48cd60d3#6",
+          "top1_score": 0.1765295963129161,
+          "leak": 1.0,
+          "n_returned": 10,
+          "foreign_gold": 0.0,
+          "threshold": 0.0
+        }
+      ]
+    },
+    "no-rerank+no-threshold+wide": {
+      "spec": "no-rerank+no-threshold+wide",
+      "use_rerank": false,
+      "retrieval": {
+        "dense_top_k": 50,
+        "sparse_top_k": 50,
+        "fusion_top_k": 50,
+        "rrf_k": 60,
+        "rerank_enabled": false,
+        "rerank_model": "BAAI/bge-reranker-v2-m3",
+        "rerank_top_n": 5,
+        "rerank_max_length": 1024,
+        "rerank_min_score": 0.0,
+        "rerank_min_keep": 0
+      },
+      "effective_k": 10,
+      "n_answerable": 15,
+      "n_negative": 5,
+      "nonempty_rate": {
+        "1": 1.0,
+        "3": 1.0,
+        "5": 1.0,
+        "10": 1.0
+      },
+      "tie_ambiguous": [
+        "seed-010"
+      ],
+      "aggregates": {
+        "1": {
+          "n": 15,
+          "hit": 0.8,
+          "rr": 0.8,
+          "ndcg": 0.761904761904762,
+          "ndcg_binary": 0.8,
+          "precision": 0.8,
+          "recall": 0.6444444444444444
+        },
+        "3": {
+          "n": 15,
+          "hit": 1.0,
+          "rr": 0.9,
+          "ndcg": 0.8416287087209348,
+          "ndcg_binary": 0.8337993703714104,
+          "precision": 0.3777777777777777,
+          "recall": 0.8777777777777779
+        },
+        "5": {
+          "n": 15,
+          "hit": 1.0,
+          "rr": 0.9,
+          "ndcg": 0.8761454198598544,
+          "ndcg_binary": 0.8769805211454431,
+          "precision": 0.26666666666666666,
+          "recall": 0.9555555555555556
+        },
+        "10": {
+          "n": 15,
+          "hit": 1.0,
+          "rr": 0.9,
+          "ndcg": 0.8822162612648315,
+          "ndcg_binary": 0.8868499181776387,
+          "precision": 0.14,
+          "recall": 0.9777777777777777
+        }
+      },
+      "by_type": {
+        "1": {
+          "lexical": {
+            "n": 4,
+            "hit": 1.0,
+            "rr": 1.0,
+            "ndcg": 1.0,
+            "ndcg_binary": 1.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "semantic": {
+            "n": 4,
+            "hit": 0.75,
+            "rr": 0.75,
+            "ndcg": 0.75,
+            "ndcg_binary": 0.75,
+            "precision": 0.75,
+            "recall": 0.75
+          },
+          "multi_hop": {
+            "n": 3,
+            "hit": 0.6666666666666666,
+            "rr": 0.6666666666666666,
+            "ndcg": 0.4761904761904762,
+            "ndcg_binary": 0.6666666666666666,
+            "precision": 0.6666666666666666,
+            "recall": 0.27777777777777773
+          },
+          "contextual": {
+            "n": 2,
+            "hit": 0.5,
+            "rr": 0.5,
+            "ndcg": 0.5,
+            "ndcg_binary": 0.5,
+            "precision": 0.5,
+            "recall": 0.5
+          },
+          "ambiguous": {
+            "n": 2,
+            "hit": 1.0,
+            "rr": 1.0,
+            "ndcg": 1.0,
+            "ndcg_binary": 1.0,
+            "precision": 1.0,
+            "recall": 0.41666666666666663
+          }
+        },
+        "3": {
+          "lexical": {
+            "n": 4,
+            "hit": 1.0,
+            "rr": 1.0,
+            "ndcg": 1.0,
+            "ndcg_binary": 1.0,
+            "precision": 0.3333333333333333,
+            "recall": 1.0
+          },
+          "semantic": {
+            "n": 4,
+            "hit": 1.0,
+            "rr": 0.875,
+            "ndcg": 0.9077324383928644,
+            "ndcg_binary": 0.9077324383928644,
+            "precision": 0.3333333333333333,
+            "recall": 1.0
+          },
+          "multi_hop": {
+            "n": 3,
+            "hit": 1.0,
+            "rr": 0.8333333333333334,
+            "ndcg": 0.563009068480376,
+            "ndcg_binary": 0.5919507741351618,
+            "precision": 0.4444444444444444,
+            "recall": 0.611111111111111
+          },
+          "contextual": {
+            "n": 2,
+            "hit": 1.0,
+            "rr": 0.75,
+            "ndcg": 0.8154648767857288,
+            "ndcg_binary": 0.8154648767857288,
+            "precision": 0.3333333333333333,
+            "recall": 1.0
+          },
+          "ambiguous": {
+            "n": 2,
+            "hit": 1.0,
+            "rr": 1.0,
+            "ndcg": 0.8367719591149892,
+            "ndcg_binary": 0.7346393630113782,
+            "precision": 0.5,
+            "recall": 0.6666666666666666
+          }
+        },
+        "5": {
+          "lexical": {
+            "n": 4,
+            "hit": 1.0,
+            "rr": 1.0,
+            "ndcg": 1.0,
+            "ndcg_binary": 1.0,
+            "precision": 0.2,
+            "recall": 1.0
+          },
+          "semantic": {
+            "n": 4,
+            "hit": 1.0,
+            "rr": 0.875,
+            "ndcg": 0.9077324383928644,
+            "ndcg_binary": 0.9077324383928644,
+            "precision": 0.2,
+            "recall": 1.0
+          },
+          "multi_hop": {
+            "n": 3,
+            "hit": 1.0,
+            "rr": 0.8333333333333334,
+            "ndcg": 0.7355926241749741,
+            "ndcg_binary": 0.8078565280053255,
+            "precision": 0.4666666666666666,
+            "recall": 1.0
+          },
+          "contextual": {
+            "n": 2,
+            "hit": 1.0,
+            "rr": 0.75,
+            "ndcg": 0.8154648767857288,
+            "ndcg_binary": 0.8154648767857288,
+            "precision": 0.2,
+            "recall": 1.0
+          },
+          "ambiguous": {
+            "n": 2,
+            "hit": 1.0,
+            "rr": 1.0,
+            "ndcg": 0.8367719591149892,
+            "ndcg_binary": 0.7346393630113782,
+            "precision": 0.30000000000000004,
+            "recall": 0.6666666666666666
+          }
+        },
+        "10": {
+          "lexical": {
+            "n": 4,
+            "hit": 1.0,
+            "rr": 1.0,
+            "ndcg": 1.0,
+            "ndcg_binary": 1.0,
+            "precision": 0.1,
+            "recall": 1.0
+          },
+          "semantic": {
+            "n": 4,
+            "hit": 1.0,
+            "rr": 0.875,
+            "ndcg": 0.9077324383928644,
+            "ndcg_binary": 0.9077324383928644,
+            "precision": 0.1,
+            "recall": 1.0
+          },
+          "multi_hop": {
+            "n": 3,
+            "hit": 1.0,
+            "rr": 0.8333333333333334,
+            "ndcg": 0.7355926241749741,
+            "ndcg_binary": 0.8078565280053255,
+            "precision": 0.2333333333333333,
+            "recall": 1.0
+          },
+          "contextual": {
+            "n": 2,
+            "hit": 1.0,
+            "rr": 0.75,
+            "ndcg": 0.8154648767857288,
+            "ndcg_binary": 0.8154648767857288,
+            "precision": 0.1,
+            "recall": 1.0
+          },
+          "ambiguous": {
+            "n": 2,
+            "hit": 1.0,
+            "rr": 1.0,
+            "ndcg": 0.8823032696523172,
+            "ndcg_binary": 0.8086598407528445,
+            "precision": 0.2,
+            "recall": 0.8333333333333333
+          }
+        }
+      },
+      "negatives": {
+        "1": {
+          "n": 5,
+          "leak": 1.0,
+          "above_threshold_rate": 1.0,
+          "top1_is_foreign_gold": 0.6,
+          "mean_returned": 10.0,
+          "top1_score_mean": 0.0329065842,
+          "top1_score_p90": 0.033333335,
+          "_threshold": 0.0
+        },
+        "3": {
+          "n": 5,
+          "leak": 1.0,
+          "above_threshold_rate": 1.0,
+          "top1_is_foreign_gold": 0.6,
+          "mean_returned": 10.0,
+          "top1_score_mean": 0.0329065842,
+          "top1_score_p90": 0.033333335,
+          "_threshold": 0.0
+        },
+        "5": {
+          "n": 5,
+          "leak": 1.0,
+          "above_threshold_rate": 1.0,
+          "top1_is_foreign_gold": 0.6,
+          "mean_returned": 10.0,
+          "top1_score_mean": 0.0329065842,
+          "top1_score_p90": 0.033333335,
+          "_threshold": 0.0
+        },
+        "10": {
+          "n": 5,
+          "leak": 1.0,
+          "above_threshold_rate": 1.0,
+          "top1_is_foreign_gold": 0.6,
+          "mean_returned": 10.0,
+          "top1_score_mean": 0.0329065842,
+          "top1_score_p90": 0.033333335,
+          "_threshold": 0.0
+        }
+      },
+      "per_item": [
+        {
+          "item_id": "seed-001",
+          "type": "lexical",
+          "question": "110kV 架空输电线路的日常巡视一般多久一次?",
+          "rank": 1,
+          "n_returned": 10,
+          "n_gold": 1,
+          "rank_lo": 1,
+          "rank_hi": 1,
+          "dropped": 0,
+          "golds": [
+            [
+              "01_架空输电线路巡视作业指导书.md#1",
+              1
+            ]
+          ],
+          "top1": "01_架空输电线路巡视作业指导书.md#1",
+          "top1_score": 0.033333335,
+          "doc_source": {
+            "01_架空输电线路巡视作业指导书.md#1": "both"
+          }
+        },
+        {
+          "item_id": "seed-002",
+          "type": "lexical",
+          "question": "主变正常运行时上层油温不应超过多少摄氏度?",
+          "rank": 1,
+          "n_returned": 10,
+          "n_gold": 1,
+          "rank_lo": 1,
+          "rank_hi": 1,
+          "dropped": 0,
+          "golds": [
+            [
+              "02_主变压器运行规程.md#1",
+              1
+            ]
+          ],
+          "top1": "02_主变压器运行规程.md#1",
+          "top1_score": 0.033333335,
+          "doc_source": {
+            "02_主变压器运行规程.md#1": "both"
+          }
+        },
+        {
+          "item_id": "seed-003",
+          "type": "lexical",
+          "question": "值班人员每几小时抄录一次主变油温?",
+          "rank": 1,
+          "n_returned": 10,
+          "n_gold": 1,
+          "rank_lo": 1,
+          "rank_hi": 1,
+          "dropped": 0,
+          "golds": [
+            [
+              "03_变电站值班与交接班制度.md#2",
+              1
+            ]
+          ],
+          "top1": "03_变电站值班与交接班制度.md#2",
+          "top1_score": 0.033333335,
+          "doc_source": {
+            "03_变电站值班与交接班制度.md#2": "both"
+          }
+        },
+        {
+          "item_id": "seed-004",
+          "type": "semantic",
+          "question": "变压器内部如果发生过热或者放电性故障,用哪种试验手段最能查出来?",
+          "rank": 2,
+          "n_returned": 10,
+          "n_gold": 1,
+          "rank_lo": 2,
+          "rank_hi": 2,
+          "dropped": 0,
+          "golds": [
+            [
+              "02_主变压器运行规程.md#2",
+              2
+            ]
+          ],
+          "top1": "639a2bde#4",
+          "top1_score": 0.03306011,
+          "doc_source": {
+            "02_主变压器运行规程.md#2": "both"
+          }
+        },
+        {
+          "item_id": "seed-005",
+          "type": "semantic",
+          "question": "怎么判断复合绝缘子内部已经受潮或者存在导通性缺陷?",
+          "rank": 1,
+          "n_returned": 10,
+          "n_gold": 1,
+          "rank_lo": 1,
+          "rank_hi": 1,
+          "dropped": 0,
+          "golds": [
+            [
+              "04_绝缘子检测作业指导书.md#3",
+              1
+            ]
+          ],
+          "top1": "04_绝缘子检测作业指导书.md#3",
+          "top1_score": 0.033333335,
+          "doc_source": {
+            "04_绝缘子检测作业指导书.md#3": "both"
+          }
+        },
+        {
+          "item_id": "seed-006",
+          "type": "semantic",
+          "question": "线路通道里哪几类车辆的臂架碰到导线会造成人身伤亡?",
+          "rank": 1,
+          "n_returned": 10,
+          "n_gold": 1,
+          "rank_lo": 1,
+          "rank_hi": 1,
+          "dropped": 0,
+          "golds": [
+            [
+              "01_架空输电线路巡视作业指导书.md#3",
+              1
+            ]
+          ],
+          "top1": "01_架空输电线路巡视作业指导书.md#3",
+          "top1_score": 0.033333335,
+          "doc_source": {
+            "01_架空输电线路巡视作业指导书.md#3": "both"
+          }
+        },
+        {
+          "item_id": "seed-007",
+          "type": "semantic",
+          "question": "归档工作做得不好,最直接的后果是什么?",
+          "rank": 1,
+          "n_returned": 10,
+          "n_gold": 1,
+          "rank_lo": 1,
+          "rank_hi": 1,
+          "dropped": 0,
+          "golds": [
+            [
+              "08_设备台账与运行资料归档管理.md#5",
+              1
+            ]
+          ],
+          "top1": "08_设备台账与运行资料归档管理.md#5",
+          "top1_score": 0.033333335,
+          "doc_source": {
+            "08_设备台账与运行资料归档管理.md#5": "both"
+          }
+        },
+        {
+          "item_id": "seed-008",
+          "type": "lexical",
+          "question": "红外测温时,氧化后的铝表面发射率应该取多少?",
+          "rank": 1,
+          "n_returned": 10,
+          "n_gold": 1,
+          "rank_lo": 1,
+          "rank_hi": 1,
+          "dropped": 0,
+          "golds": [
+            [
+              "07_红外测温作业指导书.md#2",
+              1
+            ]
+          ],
+          "top1": "07_红外测温作业指导书.md#2",
+          "top1_score": 0.033333335,
+          "doc_source": {
+            "07_红外测温作业指导书.md#2": "both"
+          }
+        },
+        {
+          "item_id": "seed-009",
+          "type": "multi_hop",
+          "question": "迎峰度夏期间主变油温到多少要加强监视,那时的记录频次又是多少?",
+          "rank": 1,
+          "n_returned": 10,
+          "n_gold": 3,
+          "rank_lo": 1,
+          "rank_hi": 1,
+          "dropped": 0,
+          "golds": [
+            [
+              "09_迎峰度夏专项运行措施.md#2",
+              1
+            ],
+            [
+              "03_变电站值班与交接班制度.md#2",
+              4
+            ],
+            [
+              "02_主变压器运行规程.md#1",
+              5
+            ]
+          ],
+          "top1": "09_迎峰度夏专项运行措施.md#2",
+          "top1_score": 0.033333335,
+          "doc_source": {
+            "09_迎峰度夏专项运行措施.md#2": "both",
+            "03_变电站值班与交接班制度.md#2": "both",
+            "02_主变压器运行规程.md#1": "both"
+          }
+        },
+        {
+          "item_id": "seed-010",
+          "type": "multi_hop",
+          "question": "检测发现零值绝缘子应该怎么处理?",
+          "rank": 2,
+          "n_returned": 10,
+          "n_gold": 2,
+          "rank_lo": 1,
+          "rank_hi": 2,
+          "dropped": 0,
+          "golds": [
+            [
+              "04_绝缘子检测作业指导书.md#2",
+              4
+            ],
+            [
+              "04_绝缘子检测作业指导书.md#5",
+              2
+            ]
+          ],
+          "top1": "3b31671d#1",
+          "top1_score": 0.03306011,
+          "doc_source": {
+            "04_绝缘子检测作业指导书.md#2": "both",
+            "04_绝缘子检测作业指导书.md#5": "both"
+          }
+        },
+        {
+          "item_id": "seed-011",
+          "type": "multi_hop",
+          "question": "严重缺陷和危急缺陷分别要在多久内消除?",
+          "rank": 1,
+          "n_returned": 10,
+          "n_gold": 2,
+          "rank_lo": 1,
+          "rank_hi": 1,
+          "dropped": 0,
+          "golds": [
+            [
+              "06_缺陷定级与消缺管理细则.md#3",
+              3
+            ],
+            [
+              "06_缺陷定级与消缺管理细则.md#2",
+              1
+            ]
+          ],
+          "top1": "06_缺陷定级与消缺管理细则.md#2",
+          "top1_score": 0.033333335,
+          "doc_source": {
+            "06_缺陷定级与消缺管理细则.md#3": "both",
+            "06_缺陷定级与消缺管理细则.md#2": "both"
+          }
+        },
+        {
+          "item_id": "seed-012",
+          "type": "contextual",
+          "question": "该系统对历史数据有什么依赖?",
+          "rank": 1,
+          "n_returned": 10,
+          "n_gold": 1,
+          "rank_lo": 1,
+          "rank_hi": 1,
+          "dropped": 0,
+          "golds": [
+            [
+              "07_红外测温作业指导书.md#4",
+              1
+            ]
+          ],
+          "top1": "07_红外测温作业指导书.md#4",
+          "top1_score": 0.033333335,
+          "doc_source": {
+            "07_红外测温作业指导书.md#4": "both"
+          }
+        },
+        {
+          "item_id": "seed-013",
+          "type": "contextual",
+          "question": "上述判据在什么情况下应当改用绝对温升?",
+          "rank": 2,
+          "n_returned": 10,
+          "n_gold": 1,
+          "rank_lo": 2,
+          "rank_hi": 2,
+          "dropped": 0,
+          "golds": [
+            [
+              "07_红外测温作业指导书.md#4",
+              2
+            ]
+          ],
+          "top1": "0c6ebad5#3",
+          "top1_score": 0.033333335,
+          "doc_source": {
+            "07_红外测温作业指导书.md#4": "both"
+          }
+        },
+        {
+          "item_id": "seed-014",
+          "type": "ambiguous",
+          "question": "运行资料一般要保存多久?",
+          "rank": 1,
+          "n_returned": 10,
+          "n_gold": 3,
+          "rank_lo": 1,
+          "rank_hi": 1,
+          "dropped": 0,
+          "golds": [
+            [
+              "08_设备台账与运行资料归档管理.md#3",
+              1
+            ],
+            [
+              "03_变电站值班与交接班制度.md#5",
+              0
+            ],
+            [
+              "06_缺陷定级与消缺管理细则.md#5",
+              8
+            ]
+          ],
+          "top1": "08_设备台账与运行资料归档管理.md#3",
+          "top1_score": 0.032795697,
+          "doc_source": {
+            "08_设备台账与运行资料归档管理.md#3": "both",
+            "03_变电站值班与交接班制度.md#5": "both",
+            "06_缺陷定级与消缺管理细则.md#5": "both"
+          }
+        },
+        {
+          "item_id": "seed-015",
+          "type": "ambiguous",
+          "question": "导线断股达到什么程度就必须处理?",
+          "rank": 1,
+          "n_returned": 10,
+          "n_gold": 2,
+          "rank_lo": 1,
+          "rank_hi": 1,
+          "dropped": 0,
+          "golds": [
+            [
+              "05_金具与导地线检查作业指导书.md#2",
+              1
+            ],
+            [
+              "06_缺陷定级与消缺管理细则.md#2",
+              2
+            ]
+          ],
+          "top1": "05_金具与导地线检查作业指导书.md#2",
+          "top1_score": 0.033333335,
+          "doc_source": {
+            "05_金具与导地线检查作业指导书.md#2": "both",
+            "06_缺陷定级与消缺管理细则.md#2": "both"
+          }
+        }
+      ],
+      "negative_items": [
+        {
+          "item_id": "seed-031",
+          "question": "220kV 断路器的额定开断电流是多少千安?",
+          "top1": "01_架空输电线路巡视作业指导书.md#1",
+          "top1_score": 0.032539684,
+          "leak": 1.0,
+          "n_returned": 10,
+          "foreign_gold": 1.0,
+          "threshold": 0.0
+        },
+        {
+          "item_id": "seed-032",
+          "question": "GIS 组合电器 SF6 气室的微水含量限值是多少?",
+          "top1": "02_主变压器运行规程.md#2",
+          "top1_score": 0.033333335,
+          "leak": 1.0,
+          "n_returned": 10,
+          "foreign_gold": 1.0,
+          "threshold": 0.0
+        },
+        {
+          "item_id": "seed-033",
+          "question": "变电站蓄电池组的均充电压和浮充电压各是多少?",
+          "top1": "48cd60d3#1",
+          "top1_score": 0.032539684,
+          "leak": 1.0,
+          "n_returned": 10,
+          "foreign_gold": 0.0,
+          "threshold": 0.0
+        },
+        {
+          "item_id": "seed-034",
+          "question": "架空线路杆塔的工频接地电阻限值是多少欧姆?",
+          "top1": "01_架空输电线路巡视作业指导书.md#3",
+          "top1_score": 0.032786883,
+          "leak": 1.0,
+          "n_returned": 10,
+          "foreign_gold": 1.0,
+          "threshold": 0.0
+        },
+        {
+          "item_id": "seed-035",
+          "question": "变压器的绕组直流电阻试验周期是多久?",
+          "top1": "48cd60d3#6",
+          "top1_score": 0.033333335,
+          "leak": 1.0,
+          "n_returned": 10,
+          "foreign_gold": 0.0,
+          "threshold": 0.0
+        }
+      ]
+    }
+  }
+}
