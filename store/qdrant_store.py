@@ -360,6 +360,71 @@ class QdrantStore:
         return sorted(seen.values(), key=lambda x: x["doc_id"])
 
     # ----------------------------------------------------------------- #
+    # payload 就地改(受控写工具 / 版本回溯)
+    # ----------------------------------------------------------------- #
+
+    def doc_records(self, doc_id: str) -> list[qm.Record]:
+        """按 doc_id 取出全部块记录(带 payload,**不带向量**)。
+
+        改字段之前得先知道原值 —— 回滚要用,见 `agent/tools.py` 的
+        `mark_superseded`。不取向量是因为这条路径只动元数据,把 1024 维
+        稠密向量拉回来纯属浪费带宽。
+        """
+        if not doc_id or not self.exists():
+            return []
+        out: list[qm.Record] = []
+        offset = None
+        while True:
+            records, offset = self.client.scroll(
+                collection_name=self.cfg.collection,
+                scroll_filter=qm.Filter(
+                    must=[qm.FieldCondition(key="doc_id", match=qm.MatchValue(value=doc_id))]
+                ),
+                limit=512,
+                offset=offset,
+                with_payload=True,
+                with_vectors=False,
+            )
+            out.extend(records)
+            if offset is None:
+                break
+        return out
+
+    def set_payload(
+        self,
+        doc_id: str,
+        payload: Mapping[str, Any],
+        *,
+        chunk_index: int | None = None,
+    ) -> int:
+        """就地改 payload,**不碰向量**。返回改了几块。
+
+        为什么不是 delete + 重新 upsert:那要重算嵌入(贵),而且中间态
+        一旦失败这篇文档就整篇没了 —— 一次「改元数据」不该有丢数据的
+        可能。set_payload 是原地改,失败就还是老值。
+
+        `chunk_index` 给了就只改那一块,否则改整篇。
+        """
+        recs = self.doc_records(doc_id)
+        ids = [
+            r.id
+            for r in recs
+            if chunk_index is None or (r.payload or {}).get("chunk_index") == chunk_index
+        ]
+        if not ids:
+            return 0
+        self.client.set_payload(
+            collection_name=self.cfg.collection,
+            payload=dict(payload),
+            # 用显式 id 列表而不是 FilterSelector:我们刚刚才 scroll 出这批
+            # id,期间若有别的写入落了同一篇文档,按 filter 改会连新块一起改掉,
+            # 而按 id 改只动我们看过的那批 —— 审计里记的"改了几块"才是真的。
+            points=qm.PointIdsList(points=ids),
+            wait=True,
+        )
+        return len(ids)
+
+    # ----------------------------------------------------------------- #
     # 检索
     # ----------------------------------------------------------------- #
 

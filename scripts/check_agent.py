@@ -1,4 +1,4 @@
-"""Agent 自检:解析器 → 工具层 → ReAct 循环。
+"""Agent 自检:解析器 → 工具层 → 受控写工具 → ReAct 循环。
 
 **不需要 LLM API key**:ReAct 循环喂的是脚本化的假 LLM(见 ScriptedLLM),
 它按事先写好的台词逐轮返回。这样格式解析、工具分发、截断、轮次上限、
@@ -23,7 +23,9 @@ check_graphrag.py 验。
 from __future__ import annotations
 
 import dataclasses
+import json
 import sys
+import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -45,11 +47,16 @@ from agent.react import (  # noqa: E402
 )
 from agent.tools import (  # noqa: E402
     DOCS_TOOL,
+    EXPORT_TOOL,
     KB_TOOL,
+    MARK_TOOL,
+    STATUS_CURRENT,
+    STATUS_SUPERSEDED,
     WEB_TOOL,
     Tool,
     ToolRegistry,
     build_default_tools,
+    build_registry,
     format_hits,
 )
 from agent.websearch import WebResult, WebSearchError, WebSearcher  # noqa: E402
@@ -64,6 +71,32 @@ DOC_TEXT = (
 HIT_QUERY = "绝缘子破损判据"
 # 用来跑「库里没有」那一路的 collection:建好但**一个点都不写**
 EMPTY_COLLECTION = "agentic_kb_selftest_agent_empty"
+
+# 写工具专用的长文档。**单独一篇,不去撑大 DOC_TEXT** —— 上面那篇是检索
+# 用例的夹具,长度和措辞牵着命中/阈值那几条断言,动它等于顺手改了一组
+# 已经调好的期望值。而「混合状态」用例非得要一篇多块文档不可
+# (chunk_size=512,这篇约 1200 字 → 3 块)。
+WRITE_DOC_NAME = "自检缺陷定级细则"
+WRITE_DOC_TEXT = (
+    "第一条 为规范输变电设备缺陷管理,按缺陷严重程度分为紧急、重大、一般三级。"
+    "紧急缺陷是指威胁设备安全运行、随时可能造成事故的缺陷,发现后应立即处理,"
+    "处理时限不超过二十四小时;重大缺陷是指短期内可能发展为事故的缺陷,"
+    "处理时限不超过七天;一般缺陷是指对安全运行影响较小、可列入计划检修的缺陷,"
+    "处理时限不超过一个检修周期。"
+    "第二条 缺陷定级由运维班组初判,由运维分部专业工程师复核定级结论,"
+    "定级结论应当记录在设备缺陷管理台账中,并同步录入生产管理系统。"
+    "定级存在争议时,由运维分部组织专业会商确定,会商记录随缺陷档案一并保存。"
+    "第三条 消缺完成后应当由发起人以外的人员进行验收,验收内容包括缺陷现象是否消除、"
+    "设备运行参数是否恢复正常、是否存在遗留问题。验收不合格的应当重新纳入缺陷管理流程,"
+    "并按原等级重新计时,不得以验收不合格为由延长处理时限。"
+    "第四条 因故不能在规定时限内完成消缺的,应当在时限届满前办理延期手续,"
+    "说明延期理由、临时管控措施和计划完成时间,经运维分部批准后生效。"
+    "延期次数一般不超过一次,延期后的累计时限不得超过原时限的两倍。"
+    "第五条 缺陷管理台账应当按月统计、按季分析,统计内容包括缺陷发现数量、"
+    "各等级占比、按期消缺率、超期未消缺数量以及重复性缺陷情况。"
+    "重复性缺陷应当开展专项分析,查明根因,不得简单以消缺了事。"
+    "第六条 本细则由运维分部负责解释,自发布之日起施行。"
+)
 
 
 # --------------------------------------------------------------------- #
@@ -254,6 +287,8 @@ def check_tools(failures: list[str]) -> tuple[QdrantStore, QdrantStore] | None:
     print(f"    语料写入: {st.summary()}")
     if st.chunks_written < 1:
         failures.append("测试语料没写进去,后面的知识库工具没法验")
+    # 写工具那一段要一篇多块文档(「混合状态」用例必须有两块才构造得出来)
+    pipe.ingest_text(WRITE_DOC_TEXT, source="selftest_agent://细则", title=WRITE_DOC_NAME)
 
     searcher = StubSearcher()
     reg = ToolRegistry(
@@ -352,8 +387,11 @@ def check_tools(failures: list[str]) -> tuple[QdrantStore, QdrantStore] | None:
         failures.append(f"未配置的 Observation 不对: {obs[:160]!r}")
 
     # --- 文档清单 ---
+    # 篇数从库里现查,不写死 —— 上面又多导了一篇给写工具用,写死数字的
+    # 断言会在下次加夹具时以一个和被测行为无关的理由变红。
     obs = reg.run(DOCS_TOOL, "-")
-    ok = DOC_NAME in obs and "共 1 篇" in obs
+    n_docs = len(store.list_docs())
+    ok = DOC_NAME in obs and f"共 {n_docs} 篇" in obs and "按关键词筛选后" not in obs
     print(f"    {'✅' if ok else '❌'} 文档清单 -> {obs.splitlines()[-2] if ok else obs[:60]!r}")
     if not ok:
         failures.append(f"文档清单不对: {obs[:200]!r}")
@@ -375,6 +413,11 @@ def check_tools(failures: list[str]) -> tuple[QdrantStore, QdrantStore] | None:
     if not ok:
         failures.append(f"format_hits 没渲染图信息: {txt[:200]!r}")
 
+    # 写工具自检直接挂在这里跑:它要一份**真实存在的 doc_id**,而语料刚
+    # 由上面写进这个测试 collection;另起一套只会重跑一遍嵌入。
+    # 它在最后把标记撤销还原,所以不影响后面 ReAct 那一段。
+    check_write_tools(failures, store)
+
     # 两个 collection 都要交回给 main 去删(空的那个也要)
     return store, empty_store
 
@@ -384,12 +427,296 @@ def _raise(arg: str) -> str:
 
 
 # --------------------------------------------------------------------- #
-# 3. ReAct 循环
+# 3. 受控写工具
+# --------------------------------------------------------------------- #
+
+
+def check_write_tools(failures: list[str], store: QdrantStore) -> None:
+    """写工具的三道闸 + 审计 + 可逆。
+
+    **不碰正式 exports/ 和正式 logs/audit.jsonl** —— 全程落在
+    `tempfile.TemporaryDirectory` 里。自检往生产日志里灌数据,往后就再也
+    分不清哪条是自检、哪条是真事。
+
+    `allow_write` 一律**显式传**,不读 `AgentConfig` —— 否则 `.env` 里
+    把 `AGENT_ALLOW_WRITE` 打开的人,自检会静默变成另一套行为。
+    """
+    print("\n[3] 受控写工具(权限 + 审计)")
+
+    docs = store.list_docs()
+    if not docs:
+        failures.append("写工具自检拿不到测试文档 —— 前面的语料没写进去")
+        return
+    # 挑**块数最多**的那篇。下面「混合状态」用例要求同一 doc 下至少两块
+    # —— 要是选到单块文档,那条断言会被自己的前置条件悄悄跳过,而跳过的
+    # 安全测试比没有这条测试更坏:报告上看着是绿的。
+    best = max(docs, key=lambda d: d.get("chunks", 0))
+    if best.get("chunks", 0) < 2:
+        failures.append(f"自检语料里没有多块文档(最多 {best.get('chunks')} 块),混合状态用例无法构造")
+        return
+    doc_id = best["doc_id"]
+
+    tmp = tempfile.TemporaryDirectory(prefix="kb_selftest_")
+    root = Path(tmp.name)
+    exports = root / "exports"
+    audit_path = root / "audit.jsonl"
+
+    def make_registry(**kw) -> ToolRegistry:
+        cfg = dataclasses.replace(get_settings().agent, audit_log=str(audit_path))
+        # store_override 必须传:不传的话 mark_superseded 会去改**正式 collection**。
+        # 这条自检最危险的地方不是断言失败,是它自己写错了地方。
+        return build_registry(cfg, exports_dir=exports, store_override=store, **kw)
+
+    def eff_status() -> set[str]:
+        """有效状态。**字段缺失等价于 current**(Batch 3 就是这么定的),
+        所以比较状态时统一走这个函数 —— 直接比 `payload["status"]` 会把
+        「没写字段」和「写了个 current」当成两回事,而那只是同一件事的两种
+        表示。"""
+        return {
+            ((r.payload or {}).get("status") or STATUS_CURRENT)
+            for r in store.doc_records(doc_id)
+        }
+
+    def audit() -> list[dict]:
+        if not audit_path.exists():
+            return []
+        return [
+            json.loads(x)
+            for x in audit_path.read_text(encoding="utf-8").splitlines()
+            if x.strip()
+        ]
+
+    agree = lambda n, a: True  # noqa: E731
+    exported = lambda: sorted(p.name for p in exports.iterdir()) if exports.exists() else []  # noqa: E731
+
+    # --- 闸 1:默认关 ---
+    reg = make_registry(allow_write=False)
+    obs = reg.run(EXPORT_TOOL, "不该出现.md | 正文")
+    ok = "未启用" in obs and not exported()
+    print(f"    {'✅' if ok else '❌'} 闸1 默认关:写工具被拒且没落盘")
+    if not ok:
+        failures.append(f"默认关没生效: {obs[:160]!r} 落盘={exported()}")
+    # 工具**确实挂在表里** —— 不然上面的"被拒"就只是"根本没这个工具",
+    # 那样测的是查表逻辑,不是权限层。这两件事必须分得开。
+    if EXPORT_TOOL not in reg.names or MARK_TOOL not in reg.names:
+        failures.append("写工具没挂进工具表,上面的拒绝不是权限层给的")
+    print(f"    {'✅' if EXPORT_TOOL in reg.names else '❌'} 写工具已挂进工具表(拒绝来自权限层)")
+
+    # --- 闸 2:没人能确认 ≠ 默认同意 ---
+    reg = make_registry(allow_write=True)
+    obs = reg.run(EXPORT_TOOL, "a.md | 正文")
+    ok = "没有确认通道" in obs and not exported()
+    print(f"    {'✅' if ok else '❌'} 闸2 无确认通道 -> 拒绝(不是默认同意)")
+    if not ok:
+        failures.append(f"无 confirmer 时没拒绝: {obs[:160]!r}")
+
+    reg = make_registry(allow_write=True, confirmer=lambda n, a: False)
+    obs = reg.run(EXPORT_TOOL, "b.md | 正文")
+    ok = "拒绝" in obs and not exported()
+    print(f"    {'✅' if ok else '❌'} 闸2 用户拒绝 -> 不执行")
+    if not ok:
+        failures.append(f"用户拒绝后仍执行: {obs[:160]!r}")
+
+    def boom(n: str, a: str) -> bool:
+        raise RuntimeError("确认通道炸了")
+
+    reg = make_registry(allow_write=True, confirmer=boom)
+    obs = reg.run(EXPORT_TOOL, "c.md | 正文")
+    ok = "确认环节出错" in obs and not exported()
+    print(f"    {'✅' if ok else '❌'} 闸2 确认环节自身出错 -> 按拒绝(失败方向是安全侧)")
+    if not ok:
+        failures.append(f"确认环节出错时没拒绝: {obs[:160]!r}")
+
+    # --- 闸 3:参数校验。全部点头同意,只让文件名不合法 ---
+    reg = make_registry(allow_write=True, confirmer=agree)
+    bad_names = [
+        ("../evil.md", "目录穿越"),
+        ("..\\evil.md", "反斜杠穿越"),
+        ("sub/evil.md", "带目录成分"),
+        ("D:\\tmp\\evil.md", "绝对路径"),
+        ("C:evil.md", "驱动器相对路径"),
+        ("evil.bat", "可执行后缀"),
+        ("evil.ps1", "可执行后缀"),
+        ("evil.md.exe", "双后缀"),
+        ("x" * 90 + ".md", "超长文件名"),
+    ]
+    for name, label in bad_names:
+        obs = reg.run(EXPORT_TOOL, f"{name} | 正文")
+        ok = "导出被拒绝" in obs
+        print(f"    {'✅' if ok else '❌'} 闸3 拒绝{label}:{name[:32]!r}")
+        if not ok:
+            failures.append(f"非法文件名 {name!r}({label})没被拒: {obs[:160]!r}")
+    # 上面九次尝试**一个文件都不该落盘**
+    leftover = exported()
+    ok = not leftover
+    print(f"    {'✅' if ok else '❌'} 闸3 九次越权尝试零落盘")
+    if not ok:
+        failures.append(f"越权尝试留下了文件: {leftover}")
+
+    # --- 正常导出:真落盘 + provenance + 同名不覆盖 ---
+    obs = reg.run(EXPORT_TOOL, "报告.md | 第一版结论")
+    first = exports / "报告.md"
+    body = first.read_text(encoding="utf-8") if first.exists() else ""
+    ok = (
+        first.exists()
+        and "已导出到" in obs
+        and "第一版结论" in body
+        and "受控写工具导出" in body  # provenance 头是自动加的,不是模型写的
+    )
+    print(f"    {'✅' if ok else '❌'} 正常导出:落盘 {first.name}({len(body)} 字,含来源头)")
+    if not ok:
+        failures.append(f"导出结果不对: {obs[:160]!r} body={body[:120]!r}")
+
+    reg.run(EXPORT_TOOL, "报告.md | 第二版结论")
+    second = exports / "报告-1.md"
+    ok = second.exists() and "第一版结论" in first.read_text(encoding="utf-8")
+    print(f"    {'✅' if ok else '❌'} 同名不覆盖:第二份落到 {second.name},第一份原样")
+    if not ok:
+        failures.append(f"同名导出覆盖了原文件: {exported()}")
+
+    # 不给文件名 -> 自动命名,而不是报错
+    reg.run(EXPORT_TOOL, "只有正文没有文件名")
+    ok = any(p.name.startswith("report-") for p in exports.iterdir())
+    print(f"    {'✅' if ok else '❌'} 省略文件名 -> 自动按时间命名")
+    if not ok:
+        failures.append(f"自动命名没生效: {exported()}")
+
+    # --- 审计:intent 配对、先意图后执行、被拒也留痕、只读不入账 ---
+    # 一条写调用的收尾只有两种:`result`(真执行了,无论成败)或 `denied`
+    # (被拒了)。闸 1/闸 2 的拒绝没有 intent(那时连参数都没进工具),
+    # 所以是 `intents ⊆ terminal`,不是相等。
+    recs = audit()
+    intents = {r["call_id"] for r in recs if r["phase"] == "intent"}
+    results = {r["call_id"] for r in recs if r["phase"] == "result"}
+    denied = [r for r in recs if r["phase"] == "denied"]
+    terminal = results | {r["call_id"] for r in denied}
+    ok = bool(intents) and intents <= terminal and results <= intents
+    print(f"    {'✅' if ok else '❌'} 审计:每条 intent 都有收尾、每个 result 都有 intent({len(intents)} 条)")
+    if not ok:
+        failures.append(
+            f"审计配对不全: intent={len(intents)} result={len(results)} denied={len(denied)}"
+        )
+
+    # 顺序上 intent 必须先于同一 call_id 的收尾记录 —— 这条是"崩了也有据可查"的全部依据
+    def at(cid: str, *phases: str) -> int:
+        return next(i for i, r in enumerate(recs) if r["call_id"] == cid and r["phase"] in phases)
+
+    order_ok = all(at(cid, "intent") < at(cid, "result", "denied") for cid in intents & terminal)
+    print(f"    {'✅' if order_ok else '❌'} 审计:每条 intent 都先于对应的收尾记录落盘")
+    if not order_ok:
+        failures.append("存在收尾记录早于 intent —— 先写意图这条没做到")
+
+    # 被拒的尝试分两类,都要留痕:
+    #   - 闸 3 的 9 次越权 -> 过了前两闸、拿到 ticket,由**工具**抛 ToolDenied
+    #   - 闸 1 / 闸 2 的 4 次   -> 在 authorize 里就被拒,连 ticket 都没有
+    # 第二类以前完全没记录(日志上一切正常,而系统正被反复试探)。
+    traversal = [r for r in denied if "导出被拒绝" in (r.get("detail") or "")]
+    gate = [r for r in denied if "导出被拒绝" not in (r.get("detail") or "")]
+    ok = len(traversal) >= len(bad_names) and len(gate) >= 1
+    print(
+        f"    {'✅' if ok else '❌'} 审计:被拒的尝试也留痕"
+        f"(越权 {len(traversal)} 条 / 闸门 {len(gate)} 条)"
+    )
+    if not ok:
+        failures.append(f"越权尝试没有留痕: 越权={len(traversal)} 闸门={len(gate)}")
+
+    before = len(audit())
+    reg.run(DOCS_TOOL, "-")
+    ok = len(audit()) == before
+    print(f"    {'✅' if ok else '❌'} 审计:只读工具不入账(不被写记录淹没)")
+    if not ok:
+        failures.append("只读工具被写进了审计日志")
+
+    # --- mark_superseded:标记 -> 幂等 -> 撤销,且正文/向量没被动过 ---
+    recs0 = store.doc_records(doc_id)
+    before_status = eff_status()
+    before_text = (recs0[0].payload or {}).get("text", "")
+
+    obs = reg.run(MARK_TOOL, f"{doc_id} | 2025-06 已废止")
+    cur = store.doc_records(doc_id)
+    status = {(r.payload or {}).get("status") for r in cur}
+    prev = {(r.payload or {}).get("previous_status") for r in cur}
+    ok = status == {STATUS_SUPERSEDED} and prev == {STATUS_CURRENT} and "标记为已失效" in obs
+    print(f"    {'✅' if ok else '❌'} 标记失效:status={status} previous_status={prev}")
+    if not ok:
+        failures.append(f"标记失效不对: {obs[:120]!r} status={status} prev={prev}")
+
+    # payload 是**合并**写入:正文必须原样还在(否则这个工具就成了篡改工具)
+    after_text = (store.doc_records(doc_id)[0].payload or {}).get("text", "")
+    ok = after_text == before_text and bool(after_text)
+    print(f"    {'✅' if ok else '❌'} 标记只改状态字段,正文原样({len(after_text)} 字)")
+    if not ok:
+        failures.append("标记失效把正文也改了 —— set_payload 应该是合并语义")
+
+    # 幂等:重复标记**不能覆盖 previous_status**
+    obs = reg.run(MARK_TOOL, f"{doc_id} | 再标一次")
+    prev2 = {(r.payload or {}).get("previous_status") for r in store.doc_records(doc_id)}
+    ok = "无需重复标记" in obs and prev2 == {STATUS_CURRENT}
+    print(f"    {'✅' if ok else '❌'} 重复标记幂等:previous_status 仍是 {prev2}")
+    if not ok:
+        failures.append(f"重复标记覆盖了回滚点: prev={prev2} —— 撤销就回不去了")
+
+    # 撤销 -> 回到原状态,且辅助字段清空
+    obs = reg.run(MARK_TOOL, f"{doc_id} | restore")
+    cur = store.doc_records(doc_id)
+    status = eff_status()
+    leftovers = {k for r in cur for k in ("previous_status", "superseded_at", "superseded_reason")
+                 if (r.payload or {}).get(k) is not None}
+    ok = status == before_status and not leftovers and "撤销标记" in obs
+    print(f"    {'✅' if ok else '❌'} 撤销标记:回到 {status},辅助字段已清空")
+    if not ok:
+        failures.append(f"撤销没回到原状态: status={status} 残留={leftovers}")
+
+    # 标记一次能撤销一次,撤销后还能再标 —— 可逆不是一次性的
+    reg.run(MARK_TOOL, doc_id)
+    obs = reg.run(MARK_TOOL, f"{doc_id} | restore")
+    ok = eff_status() == before_status
+    print(f"    {'✅' if ok else '❌'} 可逆是反复可用的(标记→撤销→再标记→撤销)")
+    if not ok:
+        failures.append("第二次往返失败了")
+
+    # --- 混合状态:半篇被标过 -> 拒绝,而不是一刀切 ---
+    # 这是**安全性质的拒绝**,必须走 ToolDenied(审计记 denied)。构造方式
+    # 是绕过工具直接改一块的 payload —— 模拟"上一次操作只做了一半"。
+    # 文档已在上面选过(`multi`),这里不再判长度 —— 跳过会伪装成通过。
+    store.set_payload(doc_id, {"status": STATUS_SUPERSEDED}, chunk_index=0)
+    before_mixed = eff_status()
+    obs = reg.run(MARK_TOOL, f"{doc_id} | 又标一次")
+    ok = "混合状态" in obs and eff_status() == before_mixed
+    print(f"    {'✅' if ok else '❌'} 混合状态 -> 拒绝且不落任何改动({sorted(before_mixed)})")
+    if not ok:
+        failures.append(f"混合状态没被拦住或已经改了数据: {obs[:120]!r}")
+
+    # 收尾:把那一块还原,后面的用例还在同一个 doc 上跑
+    store.set_payload(doc_id, {"status": STATUS_CURRENT}, chunk_index=0)
+    ok = eff_status() == {STATUS_CURRENT}
+    print(f"    {'✅' if ok else '❌'} 混合状态还原后状态一致({sorted(eff_status())})")
+    if not ok:
+        failures.append(f"还原失败: {sorted(eff_status())}")
+
+    # --- 参数缺失/不存在:给模型的提示要能指导下一步,且不产生副作用 ---
+    obs = reg.run(MARK_TOOL, "   ")
+    ok = "请给出" in obs
+    print(f"    {'✅' if ok else '❌'} 空参数被拦住并说明怎么填")
+    if not ok:
+        failures.append(f"空参数的提示不合格: {obs[:120]!r}")
+
+    obs = reg.run(MARK_TOOL, "这个docid不存在")
+    ok = "没有 doc_id" in obs and "list_documents" in obs
+    print(f"    {'✅' if ok else '❌'} 不存在的 doc_id -> 指向 list_documents")
+    if not ok:
+        failures.append(f"未知 doc_id 的提示不合格: {obs[:120]!r}")
+
+    tmp.cleanup()
+
+
+# --------------------------------------------------------------------- #
+# 4. ReAct 循环
 # --------------------------------------------------------------------- #
 
 
 def check_react(failures: list[str], cfg: AgentConfig) -> None:
-    print("\n[3] ReAct 循环(脚本化假 LLM)")
+    print("\n[4] ReAct 循环(脚本化假 LLM)")
 
     searcher = StubSearcher()
     reg = ToolRegistry(build_default_tools(searcher=searcher))  # type: ignore[arg-type]

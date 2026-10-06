@@ -214,12 +214,35 @@ def cmd_search(args) -> int:
     return 0
 
 
+def _agent_registry(args):
+    """按 CLI 开关装一份工具表。**写工具默认关。**
+
+    为什么不能只靠 `.env` 里的 `AGENT_ALLOW_WRITE`:闸 2 要的是「有确认
+    通道而且人点了头」,而 `build_registry(cfg)` 那条路**不挂 confirmer**,
+    于是把环境变量打开也只是把拒绝理由从「未启用」换成「没有确认通道」
+    —— 写操作照样一次都成功不了。开关和确认通道必须一起给,给一半等于
+    没给。
+
+    所以这里的口径是:`--allow-write` 或环境变量**任一**打开就放行到闸 2,
+    而确认通道**永远**是终端交互。批处理里没人回答 → 读不到输入 → 默认
+    拒绝(见 `make_cli_confirmer`),方向安全。
+    """
+    from agent.permissions import make_cli_confirmer
+    from agent.tools import build_registry
+
+    cfg = get_settings().agent
+    allow = bool(getattr(args, "allow_write", False)) or cfg.allow_write
+    if not allow:
+        return None  # 交给 ReActAgent 走默认路径(写工具全关)
+    return build_registry(cfg, allow_write=True, confirmer=make_cli_confirmer())
+
+
 def cmd_ask(args) -> int:
     from agent.react import ReActAgent
 
     s = get_settings()
     try:
-        agent = ReActAgent()
+        agent = ReActAgent(registry=_agent_registry(args))
         r = agent.run(args.question)
     except LLMNotConfigured as exc:
         print(f"❌ {exc}\n")
@@ -358,6 +381,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     pa = sub_parser("ask", "ReAct 智能问答(需要 LLM)")
     pa.add_argument("question")
+    pa.add_argument(
+        "--allow-write",
+        action="store_true",
+        help="允许写工具(导出报告 / 标记法条失效)。每次写操作会在此终端单独确认;"
+        "不给这个开关时写工具一律拒绝",
+    )
     pa.set_defaults(fn=cmd_ask)
 
     pd = sub_parser("docs", "列出库里的文档")

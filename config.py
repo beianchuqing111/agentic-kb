@@ -21,6 +21,10 @@ BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data"
 LOG_DIR = BASE_DIR / "logs"
 CACHE_DIR = BASE_DIR / "cache"
+# 受控写工具唯一允许落盘的地方。做成常量而不是让工具自己拼路径:
+# 校验「路径有没有跑出沙箱」需要一个**唯一可信的根**,根要是可配的,
+# 校验就成了「拿模型的路径比模型的路径」,等于没校验。
+EXPORT_DIR = BASE_DIR / "exports"
 
 load_dotenv(BASE_DIR / ".env")
 
@@ -346,6 +350,17 @@ class AgentConfig:
     max_format_retries: int = field(default_factory=lambda: _env_int("AGENT_FORMAT_RETRIES", 2))
     # ReAct 要的是格式稳定,不是文采。默认 0,别去调高。
     temperature: float = field(default_factory=lambda: _env_float("AGENT_TEMPERATURE", 0.0))
+
+    # ---- 受控写工具 ----
+    # 写工具的总开关,**默认关**。挂上写工具之前,工具集全是只读的,
+    # 提示词注入最坏也就是把回答带偏;挂上之后目标就变成「让智能体替你
+    # 删东西」。所以这里必须是 fail closed:要用的人显式打开
+    # (CLI `--allow-write`,API 请求体带 `allow_write`)。
+    allow_write: bool = field(default_factory=lambda: _env_bool("AGENT_ALLOW_WRITE", False))
+    # 审计日志。**写操作每一条都落盘**:先写意图再执行,见 agent/permissions.py。
+    audit_log: str = field(
+        default_factory=lambda: _env("AGENT_AUDIT_LOG", str(LOG_DIR / "audit.jsonl"))
+    )
 
 
 @dataclass(frozen=True)

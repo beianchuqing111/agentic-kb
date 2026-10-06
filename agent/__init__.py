@@ -1,5 +1,15 @@
-"""智能体层:ReAct 循环 + 工具集(知识库检索 / 联网搜索 / 文档清单)。"""
+"""智能体层:ReAct 循环 + 工具集(知识库检索 / 联网搜索 / 文档清单 / 受控写工具)。"""
 
+from agent.permissions import (
+    AuditLog,
+    Confirmer,
+    Decision,
+    Ticket,
+    ToolDenied,
+    WriteGuard,
+    make_cli_confirmer,
+    safe_export_path,
+)
 from agent.react import (
     AgentCall,
     AgentResult,
@@ -13,7 +23,11 @@ from agent.react import (
 )
 from agent.tools import (
     DOCS_TOOL,
+    EXPORT_TOOL,
     KB_TOOL,
+    MARK_TOOL,
+    STATUS_CURRENT,
+    STATUS_SUPERSEDED,
     WEB_TOOL,
     Tool,
     ToolRegistry,
@@ -41,6 +55,19 @@ __all__ = [
     "KB_TOOL",
     "WEB_TOOL",
     "DOCS_TOOL",
+    "EXPORT_TOOL",
+    "MARK_TOOL",
+    "STATUS_CURRENT",
+    "STATUS_SUPERSEDED",
+    # 权限层:调 build_registry(allow_write=True) 的人需要同时拿到这些
+    "AuditLog",
+    "Confirmer",
+    "Decision",
+    "Ticket",
+    "ToolDenied",
+    "WriteGuard",
+    "make_cli_confirmer",
+    "safe_export_path",
     "WebResult",
     "WebSearchError",
     "WebSearcher",
