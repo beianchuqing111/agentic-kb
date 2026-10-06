@@ -1,0 +1,39 @@
+# 密钥:绝不入库
+.env
+.env.local
+*.key
+
+# 索引与数据(可重建,体积大)
+data/
+indexes/
+qdrant_storage/
+logs/
+cache/
+uploads/
+snapshots/
+exports/
+
+# 本地 Neo4j 服务端 + JRE(几百 MB 的二进制,重装脚本能重建)
+neo4j/
+
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# 模型权重
+models/
+hf_cache/
+
+# 工具
+.idea/
+.vscode/
+*.log
+
+# 前端
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/

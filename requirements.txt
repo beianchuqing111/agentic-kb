@@ -1,0 +1,42 @@
+# agentic-kb 依赖
+# 环境: anaconda py310
+#
+# ⚠️ torch 不要在这里装 —— py310 里已有 2.9.1+cu130 且 CUDA 可用(RTX 5080 sm_120),
+#    重装会把它换成 CPU 版,bge-m3 编码会慢十倍以上。
+
+# ---- 嵌入与重排 ----
+FlagEmbedding>=1.4.2
+# torch 由环境提供,见上
+
+# ---- LlamaIndex(知识库主体) ----
+llama-index>=0.14.0
+llama-index-vector-stores-qdrant>=0.8.0
+llama-index-graph-stores-neo4j>=0.6.0
+
+# ---- 向量库 / 图库 ----
+qdrant-client>=1.18.0
+neo4j>=5.20
+
+# ---- 中文分词(BM25 稀疏向量用) ----
+jieba>=0.42.1
+
+# ---- 文档解析 ----
+pypdf>=4.0            # PDF 抽文本。扫描件抽不出来会显式报错,不会静默进空文档
+python-docx>=1.1      # docx 段落 + 表格
+chardet>=5.0          # 编码探测兜底(主力是 loader 里按 utf-8→gb18030 顺序试)
+
+# ---- 网页搜索 ----
+tavily-python
+
+# ---- 服务 ----
+fastapi>=0.110
+uvicorn>=0.27
+pydantic>=2.5
+
+# ---- 前端 ----
+# 界面在 webui.py。py310 里已有 5.16.0,不用重装。
+gradio>=5.16
+
+# ---- 工具 ----
+python-dotenv>=1.0.0
+tqdm>=4.66.0
