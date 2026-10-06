@@ -298,6 +298,14 @@ class GraphRAGConfig:
     max_paths_per_chunk: int = field(default_factory=lambda: _env_int("GRAPH_MAX_PATHS", 10))
     extraction_workers: int = field(default_factory=lambda: _env_int("GRAPH_WORKERS", 4))
 
+    # 抽取这一步的**独立** completion 预算。**不要**改成复用 llm.max_tokens:
+    # 现在的模型是推理模型,思维链也算 completion,8192 会在长 chunk 上被推理
+    # 吃干净、正文一个字不剩(finish_reason='length'),而 LLMError 是
+    # RuntimeError 不是 ValueError —— SimpleLLMPathExtractor 的
+    # raise_on_error=False 兜不住它,一块抽挂 = **整篇文档进不了图**。
+    # 实测(2026-10-06,doc 04 共 7 块):8192 → 5 OK / 2 FAIL,16384 → 7 OK / 0 FAIL。
+    extract_max_tokens: int = field(default_factory=lambda: _env_int("GRAPH_EXTRACT_MAX_TOKENS", 16384))
+
     # 实体对齐:同一个实体被写成不同名字时,靠向量相似度合并
     entity_merge_enabled: bool = field(default_factory=lambda: _env_bool("GRAPH_MERGE_ENTITIES", True))
     entity_merge_threshold: float = field(

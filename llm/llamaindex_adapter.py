@@ -63,6 +63,14 @@ class ProjectLLM(CustomLLM):
     context_window: int = 32768
     num_output: int = 2048
 
+    #: 这个适配器自己的 completion 预算,`None` = 用 LLMClient 的全局值。
+    #: 存在的理由:同一个模型在不同任务上需要的预算差很多。实体抽取要的
+    #: 是一小段 JSON,可推理模型会先在思维链上花掉几千 token —— 全局 8192
+    #: 在长 chunk 上会被推理吃干净,正文一个字不剩。给抽取单独放宽,
+    #: 交互式问答那边不受影响(那边走 agent/react.py,压根不经过这里)。
+    #: 字段名**故意**不叫 max_tokens:别覆盖 pydantic 基类可能的同名声明。
+    default_max_tokens: Optional[int] = None
+
     @property
     def metadata(self) -> LLMMetadata:
         cfg = get_settings().llm
@@ -88,7 +96,7 @@ class ProjectLLM(CustomLLM):
         r = get_llm().chat(
             [{"role": "user", "content": prompt}],
             temperature=kwargs.get("temperature"),
-            max_tokens=kwargs.get("max_tokens"),
+            max_tokens=kwargs.get("max_tokens") or self.default_max_tokens,
         )
         return CompletionResponse(
             text=r.text,
@@ -148,7 +156,7 @@ class ProjectLLM(CustomLLM):
         r = get_llm().chat(
             _to_openai_messages(messages),
             temperature=kwargs.get("temperature"),
-            max_tokens=kwargs.get("max_tokens"),
+            max_tokens=kwargs.get("max_tokens") or self.default_max_tokens,
         )
         return ChatResponse(
             message=ChatMessage(role=MessageRole.ASSISTANT, content=r.text),
@@ -159,8 +167,16 @@ class ProjectLLM(CustomLLM):
 _llm_adapter: Optional[ProjectLLM] = None
 
 
-def get_llamaindex_llm() -> ProjectLLM:
+def get_llamaindex_llm(default_max_tokens: Optional[int] = None) -> ProjectLLM:
+    """默认返回全局单例。
+
+    传 `default_max_tokens` 时返回**一个新实例**(带自己的预算),不污染单例 ——
+    抽取路径要放宽预算,问答路径不该跟着变。适配器本身很轻,底层
+    `LLMClient` 仍然共享同一个,用量统计不会分叉。
+    """
     global _llm_adapter
+    if default_max_tokens is not None:
+        return ProjectLLM(default_max_tokens=default_max_tokens)
     if _llm_adapter is None:
         _llm_adapter = ProjectLLM()
     return _llm_adapter

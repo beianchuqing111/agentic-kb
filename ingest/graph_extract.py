@@ -185,7 +185,11 @@ def build_extractor() -> Any:
 
     s = get_settings()
     extractor = SimpleLLMPathExtractor(
-        llm=get_llamaindex_llm(),
+        # 抽取用自己的 completion 预算,不跟全局 llm.max_tokens 走 ——
+        # 推理模型的思维链会先把预算吃干净,一块抽挂就带走整篇文档
+        # (LLMError 是 RuntimeError,raise_on_error=False 兜不住)。详见 config.py
+        # 里 extract_max_tokens 的注释与实测数字。
+        llm=get_llamaindex_llm(default_max_tokens=s.graphrag.extract_max_tokens),
         extract_prompt=EXTRACT_PROMPT,
         parse_fn=parse_triplets,
         max_paths_per_chunk=s.graphrag.max_paths_per_chunk,
