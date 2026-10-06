@@ -229,8 +229,16 @@ class GraphRAGBackend(BaseBackend):
 
         # 多跳展开交给 LlamaIndex 的 get_rel_map —— 路径去重、深度控制、
         # 排除 SOURCE 这类内部关系都在里面,不值得自己重写
+        #
+        # `property_graph_store()` 必须**在这里现取**:它是懒构造的,而且
+        # 这条 `_graph_context` 是唯一用到它的地方之一(另一处是
+        # `_seed_entities`)。**2026-10-06 之前这里写的是裸 `pg`** —— 那个名字
+        # 在本函数里从来没绑过,`NameError` 被下面的 except 吞掉,于是**每一次
+        # 检索都静默退化成「只用种子实体」**:图这一路还在,只是永远不跳。
+        # 症状和「语料太小、跳不动」一模一样,聚合分上分不出来 ——
+        # 是 `--retriever graphrag` 第一次真跑起来才暴露的。
         try:
-            triplets = pg.get_rel_map(
+            triplets = self.graph.property_graph_store().get_rel_map(
                 nodes, depth=cfg.max_hops, limit=cfg.vector_top_k * 5,
                 ignore_rels=list(INTERNAL_RELS),
             )
