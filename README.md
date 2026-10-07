@@ -9,6 +9,7 @@ GraphRAG、以及一个**答案可溯源到原文块**的 ReAct 智能体。规�
 ![Neo4j](https://img.shields.io/badge/%E5%9B%BE%E5%BA%93-Neo4j-4581C3?logo=neo4j&logoColor=white)
 ![FastAPI](https://img.shields.io/badge/API-FastAPI-009688?logo=fastapi&logoColor=white)
 ![React](https://img.shields.io/badge/%E7%95%8C%E9%9D%A2-React-61DAFB?logo=react&logoColor=black)
+![License](https://img.shields.io/badge/license-MIT-3DA639)
 
 ![检索界面](docs/images/search.png)
 
@@ -180,5 +181,7 @@ function calling、为什么并发被限成 1)见 [docs/architecture.md](docs/ar
 
 ## 许可证
 
-**尚未指定许可证。** 在加上 `LICENSE` 之前,默认保留所有权利。
-如果你想用这份代码,先开个 issue 说一声。
+[MIT](LICENSE) —— 随便用,商用也行,保留版权声明即可。
+
+> `eval/corpus/` 下那 9 篇规程是**为评测自造的样例文本**,不是正式发布的标准原文
+> (无标准号、无发布机关)—— 它们只是让评测有个能跑的语料。
